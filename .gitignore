@@ -1,0 +1,18 @@
+# Reference documents
+*.pdf
+*.docx
+*.docx#
+
+# API keys and tokens
+.env
+
+# Python virtual environment
+kite-env/
+__pycache__/
+
+# Raw data
+*.csv
+*.txt
+
+# Temporary authentication script
+login.py
