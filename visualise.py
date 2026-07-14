@@ -1,5 +1,4 @@
 import mplfinance as mpf
-import pandas_ta as ta
 
 def plot_candles(candles, filepath="chart.png", overlay_cols=None, panel_cols=None):
     addplots = []
