@@ -1,7 +1,5 @@
-# Reference documents
-*.pdf
-*.docx
-*.docx#
+# Temporary reference documents
+doc/
 
 # API keys and tokens
 .env
@@ -14,11 +12,7 @@ kite-env/
 __pycache__/
 
 # Raw data
-*.csv
-*.txt
-
-# Temporary authentication script
-login.py
+data/
 
 # Visualisations
-*.png
+output/
