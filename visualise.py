@@ -1,5 +1,7 @@
 import mplfinance as mpf
 
+import condition
+
 def plot_candles(candles, filepath="chart.png", overlay_cols=None, panel_cols=None):
     addplots = []
 
@@ -25,13 +27,13 @@ def plot_candles(candles, filepath="chart.png", overlay_cols=None, panel_cols=No
 
 def try_addplot(col_name, df, addplots, panel_no, ylabel=None, color="pink", type="line"):
     if not col_name in df.columns:
-        return
+        raise condition.ColumnNotFoundError(col_name, df)
     
     col = df[col_name]
     if col.isna().all():
         return
     
     if ylabel:
-        addplots.append(mpf.make_addplot(col, panel=panel_no, ylabel=ylabel, color=color, type=type, secondary_y = False))
+        addplots.append(mpf.make_addplot(col, panel=panel_no, ylabel=ylabel, color=color, type=type, secondary_y = False, width=0.85))
     else:
-        addplots.append(mpf.make_addplot(col, panel=panel_no, color=color, type=type, secondary_y = False))
+        addplots.append(mpf.make_addplot(col, panel=panel_no, color=color, type=type, secondary_y = False, width=0.85))

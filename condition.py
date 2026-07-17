@@ -1,7 +1,15 @@
-import pandas as pd
-from abc import ABC, abstractmethod
-from data_retrieval import bracket_by_day, downsample_days, concat_days
 import yaml
+
+import pandas as pd
+import importlib.metadata # pandas-ta-openbb has a bug, requiring this to be imported first 
+import pandas_ta as ta
+import mplfinance as mpf
+
+from tqdm import tqdm
+from visualise import try_addplot
+from abc import ABC, abstractmethod
+from kiteconnect import KiteConnect
+from data_retrieval import bracket_by_day, downsample_days, concat_days, get_instruments
 
 class Condition(ABC):
     """
@@ -20,18 +28,48 @@ class Condition(ABC):
     def __call__(self, ctx: "MarketContext") -> float:
         return self.evaluate(ctx)
 
-    def is_fulfilled(self, ctx: "MarketContext", threshold: float = 1.0) -> bool:
+    def is_fulfilled(self, ctx: "MarketContext", threshold: float = 0.0) -> bool:
         return self.evaluate(ctx) >= threshold
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}()"
 
-class MarketContext:
-    def __init__(self, dfs: dict[str, pd.DataFrame], current_time: pd.Timestamp):
-        self.dfs, self.current_time = dfs, current_time
+class InstrumentNotFoundError(KeyError):
+    def __init__(self, instrument_id):
+        super().__init__(f"instrument_id {instrument_id!r} not found in instruments_data")
+        self.instrument_id = instrument_id
 
-    def get(self, col_name: str, timeframe: str, lookback=0):
-        df = self.dfs[timeframe]
+class ColumnNotFoundError(KeyError):
+    def __init__(self, column: str, dataframe: pd.DataFrame):
+        self.column = column
+        self.dataframe = dataframe
+        self.message = f"Column named {column} not found in the following dataframe:\n{dataframe}"
+        super().__init__(self.message)
+
+    def __str__(self):
+        return self.message
+
+class MarketContext:
+    def __init__(self, instruments_data: list[dict], current_time: pd.Timestamp):
+        self.instruments_data, self.current_time = instruments_data, current_time
+
+    def get(self, data_src: dict, lookback=0):
+        instrument_id = data_src["instrument_id"]
+        timeframe_type = data_src["timeframe_type"]
+        timeframe = data_src["timeframe"]
+        col_name = data_src["col_name"]
+
+        _MISSING = object()
+
+        df = next(
+            (instrument["timeframes"][timeframe_type][timeframe]
+            for instrument in self.instruments_data if instrument["id"] == instrument_id),
+            _MISSING
+        )
+
+        if df is _MISSING:
+            raise InstrumentNotFoundError(instrument_id)
+
         # Gets the closest candle in the given timeframe before current time
         pos = df.index.get_indexer([self.current_time], method="ffill")[0] - lookback
         return df[col_name].iloc[pos]
@@ -56,20 +94,20 @@ class Not(Condition):
     def evaluate(self, ctx): return -1 * (self.condition(ctx))
 
 class NormalizedSpread(Condition):
-    def __init__(self, id, a, b, normalizer, timeframe):
+    def __init__(self, id, a, b, normalizer):
         super().__init__(id)
-        self.a, self.b, self.normalizer, self.timeframe = a, b, normalizer, timeframe
+        self.a, self.b, self.normalizer = a, b, normalizer
 
     def evaluate(self, ctx: MarketContext) -> float:
-        return (ctx.get(self.a, self.timeframe) - ctx.get(self.b, self.timeframe)) / ctx.get(self.normalizer, self.timeframe)
+        return (ctx.get(self.a) - ctx.get(self.b)) / ctx.get(self.normalizer)
     
 class FixedThreshold(Condition):
-    def __init__(self, id, a, b, normalizer, timeframe):
+    def __init__(self, id, a, b, normalizer):
         super().__init__(id)
-        self.a, self.b, self.normalizer, self.timeframe = a, b, normalizer, timeframe
+        self.a, self.b, self.normalizer = a, b, normalizer
 
     def evaluate(self, ctx: MarketContext) -> float:
-        return (ctx.get(self.a, self.timeframe) - self.b) / self.normalizer
+        return (ctx.get(self.a) - self.b) / self.normalizer
 
 CONDITION_REGISTRY = {
     "normalized_spread": NormalizedSpread,
@@ -89,12 +127,3 @@ def build_condition(spec: dict) -> Condition:
     
     cls = CONDITION_REGISTRY[spec["condition"]]
     return cls(id, **spec["args"])
-
-def generate_signals(df: pd.DataFrame):
-    with open("strategy/strategy_config.yaml") as f:
-        config = yaml.safe_load(f)
-    
-    candles_1m = bracket_by_day(df)
-
-    timeframes = config["general"]["timeframes"]["intraday"]
-    # Work in progress

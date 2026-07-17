@@ -1,11 +1,12 @@
-import os
 import csv
+import os
 import time
+from datetime import date, timedelta
+from pathlib import Path
 
 import pandas as pd
-
 from kiteconnect import KiteConnect
-from datetime import timedelta, time
+from tqdm import tqdm
 
 CSV_HEADERS = ["datetime", "open", "high", "low", "close", "volume"]
 TIMEZONE = "Asia/Kolkata"
@@ -29,7 +30,7 @@ def write_candle(candle, filepath):
             candle["volume"],
         ])
 
-def fetch_candles(kite: KiteConnect, instrument_token, start_date, end_date, interval="minute", write_path="", wipe_file=False):
+def fetch_historical_candles(kite: KiteConnect, instrument_token, start_date, end_date, interval="minute", write_path="", wipe_file=False):
     """
     Fetches historical candle data for a given instrument token from the Kite API and writes it to a CSV file.
 
@@ -38,34 +39,42 @@ def fetch_candles(kite: KiteConnect, instrument_token, start_date, end_date, int
     curr_date = start_date
     
     if wipe_file and write_path:
+        write_path = Path(write_path)
+        write_path.parent.mkdir(parents=True, exist_ok=True)
         with open(write_path, mode="w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(CSV_HEADERS)
+    
+    total_days = (end_date - start_date).days + 1
 
-    while curr_date <= end_date:
-        # Max 60 days of data can be fetched in one call
-        window_end_date = curr_date + timedelta(days=min((end_date - curr_date).days + 1, 60))
-        
-        display_end_date = window_end_date - timedelta(days=1)  # Adjust for inclusive range
-        print(f"Fetching data from {curr_date.day}/{curr_date.month}/{curr_date.year} to {display_end_date.day}/{display_end_date.month}/{display_end_date.year}..")
-        
-        candles = kite.historical_data(
-            instrument_token=instrument_token,
-            from_date=curr_date,
-            to_date=window_end_date,
-            interval=interval
-        )
-        if write_path:
-            for candle in candles:
-                write_candle(candle, write_path)
+    with tqdm(total=total_days, unit="day", desc=f"[Fetching data]") as pbar:
+        while curr_date <= end_date:
+            # Max 60 days of data can be fetched in one call
+            window_end_date = curr_date + timedelta(days=min((end_date - curr_date).days + 1, 60))
+            
+            display_end_date = window_end_date - timedelta(days=1)  # Adjust for inclusive range
+            tqdm.write(f"[Fetching data from {curr_date.day}/{curr_date.month}/{curr_date.year} to {display_end_date.day}/{display_end_date.month}/{display_end_date.year}..]")
+            
+            candles = kite.historical_data(
+                instrument_token=instrument_token,
+                from_date=curr_date,
+                to_date=window_end_date,
+                interval=interval
+            )
+            if write_path:
+                for candle in candles:
+                    write_candle(candle, write_path)
 
-        curr_date = window_end_date
+            days_advanced = (window_end_date - curr_date).days
+            pbar.update(days_advanced)
 
-        if curr_date >= end_date:
-            break
+            curr_date = window_end_date
 
-        # To avoid hitting rate limits of the API
-        time.sleep(0.4)
+            if curr_date >= end_date:
+                break
+
+            # To avoid hitting rate limits of the API
+            time.sleep(0.4)
         
 def read_candles(filepath, start_date=None, end_date=None):
     """
@@ -73,11 +82,7 @@ def read_candles(filepath, start_date=None, end_date=None):
     Inclusive of both start_date and end_date, down to the exact timestamp given.
     """
     df = pd.read_csv(filepath)
-    df["datetime"] = (
-        pd.to_datetime(df["datetime"], utc=True)
-          .dt.tz_convert(TIMEZONE)
-          .dt.tz_localize(None)
-    )
+    df["datetime"] = pd.to_datetime(df["datetime"])
     df = df.set_index("datetime").sort_index()
 
     if start_date is not None:
@@ -115,20 +120,7 @@ EXPIRY_RULE_REGISTRY = {
 }
 
 def concat_days(days_dict, start_date=None, end_date=None):
-    """
-    Selects a range of days from a {date: DataFrame} dict and concatenates
-    them into a single DataFrame, in chronological order.
-    Inclusive of both start_date and end_date.
-    """
-    start = pd.Timestamp(start_date).date() if start_date is not None else None
-    end = pd.Timestamp(end_date).date() if end_date is not None else None
-
-    selected_dates = sorted(
-        date for date in days_dict
-        if (start is None or date >= start) and (end is None or date <= end)
-    )
-
-    return pd.concat([days_dict[date] for date in selected_dates])
+    return pd.concat([days_dict[date] for date in days_dict])
 
 def resolve_instrument(kite: KiteConnect, exchange: str, spec: dict, target_date=None) -> dict:
     """spec is one instrument entry from the config. Works for any index/segment."""
@@ -150,8 +142,8 @@ def resolve_instrument(kite: KiteConnect, exchange: str, spec: dict, target_date
 
     raise ValueError(f"Don't know how to resolve instrument spec: {spec}")
 
-def parse_instruments(config, kite: KiteConnect):
-    
+def parse_instruments(kite: KiteConnect, config):
+    """Retrieves the necessary info on which instruments and timeframes are required according to the config"""
     result = []
     exchanges = config["general"]["exchanges"]
     for exchange in exchanges:
@@ -160,7 +152,6 @@ def parse_instruments(config, kite: KiteConnect):
 
         for instrument in instruments:
             kite_instrument = resolve_instrument(kite, exchange_name, instrument, pd.Timestamp.now())
-            print(f"------\\\nInstrument Spec = {instrument}\nInstrument Found = {kite_instrument}\n------/")
 
             result.append({
                 "id": instrument["id"],
@@ -168,7 +159,34 @@ def parse_instruments(config, kite: KiteConnect):
                 "token": kite_instrument["instrument_token"],
                 "timeframes": instrument["timeframes"],
             })
+
+            print(f"Parsed Instrument Info = {result[-1]}")
     return result
 
+def get_historical(kite: KiteConnect, instruments_info, start_date: date, end_date: date, start_time, stop_time, download_data=True):
+    result = []
+    if not download_data:
+        print("Skipping data download..")
+    for instrument in tqdm(instruments_info, desc="[Instrument data download]", disable=not download_data):
+        token = instrument["token"]
+        output_path = f"data/historical/{instrument["trading_symbol"]}-{token}.csv"
+        if download_data:
+            fetch_historical_candles(
+                kite,
+                token,
+                start_date,
+                end_date,
+                "minute",
+                output_path,
+                True,
+            )
+        candles = read_candles(output_path)
+        outside_session = candles[~candles.index.isin(candles.between_time(start_time, stop_time).index)]
+        print(f"{len(outside_session)} candles were found outside the specified range of {start_time}-{stop_time} [{instrument["trading_symbol"]}]")
+        candles = candles.between_time(start_time, stop_time)
 
-            
+        instrument.pop("token")
+        instrument["candles"] = candles
+
+        result.append(instrument)
+    return result
