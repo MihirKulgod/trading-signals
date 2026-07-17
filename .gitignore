@@ -4,8 +4,8 @@ doc/
 # API keys and tokens
 .env
 
-# Strategy
-strategy/
+# Strategy and general settings
+config/
 
 # Python virtual environment
 kite-env/
@@ -13,6 +13,7 @@ __pycache__/
 
 # Raw data
 data/
+cache/
 
 # Visualisations
 output/
