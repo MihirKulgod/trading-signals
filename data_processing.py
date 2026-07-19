@@ -91,51 +91,14 @@ def evaluate_condition(condition: Condition, instruments_data: dict, df: pd.Data
         scores.append(condition(ctx))
     df[condition.id] = scores
 
-# Aggregate functions to run on signals when viewing a timeframe larger than 1m
-SIGNAL_AGGREGATES = ["min", "max", "last"]
-
-def append_signal_aggregates(output_df, condition_values, output_timeframe):
+def append_signal_aggregates(output_df, condition_values, output_timeframe, signal_aggregates):
     days = bracket_by_day(condition_values)
     aggregated_days = []
 
     for date, day_df in days.items():
-        agg = day_df.resample(output_timeframe, origin=day_df.index[0]).agg(SIGNAL_AGGREGATES)
+        agg = day_df.resample(output_timeframe, origin=day_df.index[0]).agg(signal_aggregates)
         agg.columns = [f"{condition}_{stat}" for condition, stat in agg.columns]
         aggregated_days.append(agg)
 
     aggregated = pd.concat(aggregated_days)
     return output_df.join(aggregated)
-
-def examine_condition(examination_window: int, condition_id: str, timestamp: pd.Timestamp, df: pd.DataFrame, display_panels: list[dict]):
-    output_path = f"output/{condition_id}/{timestamp.date()}/{timestamp.time().strftime('%H:%M')}.png"
-
-    pos = df.index.get_indexer([timestamp], method="bfill")[0]
-    if pos == -1:
-        print(f"Couldn't find a suitable timestamp to plot {condition_id} onset at {timestamp}!")
-        return
-
-    window = df.iloc[max(0, pos - (examination_window - 1)):pos + 1]
-
-    addplots = []
-
-    for i, panel in enumerate(display_panels):
-        for item in panel.items():
-            id, color = item
-            try_addplot(id, window, addplots, i, None, color)
-
-    for agg in SIGNAL_AGGREGATES:
-        col = f"{condition_id}_{agg}"
-        try_addplot(col, window, addplots, 3, "Condition", "black")
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-    mpf.plot(
-        window,
-        type="candle",
-        style="yahoo",
-        volume=False,
-        columns=["open", "high", "low", "close", "volume"],
-        addplot=addplots,
-        figsize=(20, 8),
-        savefig=dict(fname=output_path, dpi=300),
-    )
