@@ -17,3 +17,6 @@ cache/
 
 # Visualisations
 output/
+
+# Tools
+.claude/

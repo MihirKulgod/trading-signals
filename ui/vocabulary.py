@@ -153,6 +153,7 @@ SIGNAL_AGGREGATE_OPTIONS = ["min", "max", "last", "first", "mean", "sum", "std"]
 COLOR_OPTIONS = [
     "black", "gray", "magenta", "blue", "orange", "green",
     "red", "teal", "purple", "brown", "salmon", "darkcyan",
+    "silver",
 ]
 
 # Common pandas_ta indicator kinds (free text also allowed in the UI).

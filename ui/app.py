@@ -13,6 +13,7 @@ editable is step 4.
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Callable
 
 from nicegui import ui
@@ -452,6 +453,10 @@ def _default_args_for_type(cond_type: str) -> Any:
             m[a["name"]] = _default_reference_operand()
         elif a["kind"] == "int":
             m[a["name"]] = 1
+        elif a["kind"] == "float":
+            m[a["name"]] = 1.0
+        elif a["kind"] == "condition":
+            m[a["name"]] = _default_leaf_condition()
     return m
 
 
@@ -505,6 +510,55 @@ def _remove_condition(parent_list: CommentedSeq, index: int) -> None:
     _conditions_tab.refresh()
 
 
+# --- clipboard: copy / cut / paste any condition subtree -------------------
+
+
+def _copy_condition(node: CommentedMap) -> None:
+    STATE["clipboard"] = copy.deepcopy(node)
+    ui.notify("Condition copied")
+    _conditions_tab.refresh()
+
+
+def _cut_condition(node: CommentedMap, on_remove) -> None:
+    STATE["clipboard"] = copy.deepcopy(node)
+    on_remove()  # removes the source from its slot and refreshes
+
+
+def _paste_append(lst: CommentedSeq) -> None:
+    node = copy.deepcopy(STATE["clipboard"])
+    node["id"] = _new_id()  # avoid duplicate top-level ids (they name score columns)
+    lst.append(node)
+    _conditions_tab.refresh()
+
+
+def _paste_replace(args: CommentedMap, key: str) -> None:
+    node = copy.deepcopy(STATE["clipboard"])
+    node["id"] = _new_id()
+    args[key] = node
+    _conditions_tab.refresh()
+
+
+def _paste_button(on_paste, tooltip: str):
+    btn = ui.button(icon="content_paste", on_click=lambda cb=on_paste: cb()) \
+        .props("flat dense").tooltip(tooltip)
+    if STATE.get("clipboard") is None:
+        btn.props("disable")
+    return btn
+
+
+# Per-node collapse state, keyed by object identity so it survives tab refreshes
+# and each node (parent or child) toggles independently.
+def _toggle_collapsed(node: CommentedMap) -> None:
+    coll = STATE.setdefault("collapsed", set())
+    key = id(node)
+    coll.discard(key) if key in coll else coll.add(key)
+    _conditions_tab.refresh()
+
+
+# Render simple scalar fields (numbers) first, larger nested fields last.
+_KIND_ORDER = {"int": 0, "float": 0, "operand": 1, "reference": 1, "condition": 2}
+
+
 # --- operand + condition editors -------------------------------------------
 
 
@@ -550,13 +604,36 @@ def _int_field(args: CommentedMap, name: str) -> None:
         .props("dense").classes("min-w-[110px]")
 
 
-def _condition_editor(node: CommentedMap, parent_list: CommentedSeq, index: int, depth: int) -> None:
+def _float_field(args: CommentedMap, name: str) -> None:
+    ui.number(label=name, value=args.get(name, 1.0),
+              on_change=lambda e, a=args, n=name: a.__setitem__(
+                  n, float(e.value) if e.value is not None else None)) \
+        .props("dense").classes("min-w-[110px]")
+
+
+def _nested_condition_editor(args: CommentedMap, key: str, depth: int) -> None:
+    child = args.get(key)
+    if not isinstance(child, dict):
+        child = _default_leaf_condition()
+        args[key] = child
+    with ui.column().classes("w-full gap-1"):
+        with ui.row().classes("items-center gap-2"):
+            ui.label(key).classes(MUTED)
+            _paste_button(lambda a=args, k=key: _paste_replace(a, k), "Paste as input")
+        _condition_editor(child, depth + 1)  # required slot -> no remove button
+
+
+def _condition_editor(node: CommentedMap, depth: int, on_remove=None) -> None:
     cond_type = node.get("condition")
     is_combinator = _is_combinator(cond_type)
     type_opts = _with_current(vocabulary.condition_types(), cond_type)
+    collapsed = id(node) in STATE.setdefault("collapsed", set())
 
     with ui.card().classes("w-full").style(f"margin-left:{depth * 16}px"):
         with ui.row().classes("items-center gap-2 w-full"):
+            ui.button(icon="chevron_right" if collapsed else "expand_more",
+                      on_click=lambda n=node: _toggle_collapsed(n)) \
+                .props("flat dense").tooltip("Expand" if collapsed else "Collapse")
             ui.select(type_opts, value=cond_type, label="type",
                       on_change=lambda e, n=node: _reshape_condition(n, e.value)) \
                 .props("dense").classes("min-w-[150px]")
@@ -565,24 +642,39 @@ def _condition_editor(node: CommentedMap, parent_list: CommentedSeq, index: int,
             if is_combinator:
                 ui.button(icon="add", on_click=lambda n=node: _add_child(n)) \
                     .props("flat dense").tooltip("Add child")
-            ui.button(icon="delete",
-                      on_click=lambda pl=parent_list, i=index: _remove_condition(pl, i)) \
-                .props("flat dense color=negative")
+                _paste_button(lambda n=node: _paste_append(n.setdefault("args", CommentedSeq())),
+                              "Paste as child")
+            ui.button(icon="content_copy", on_click=lambda n=node: _copy_condition(n)) \
+                .props("flat dense").tooltip("Copy")
+            if on_remove is not None:
+                ui.button(icon="content_cut",
+                          on_click=lambda n=node, cb=on_remove: _cut_condition(n, cb)) \
+                    .props("flat dense").tooltip("Cut")
+                ui.button(icon="delete", on_click=lambda cb=on_remove: cb()) \
+                    .props("flat dense color=negative")
+
+        if collapsed:
+            return
 
         if is_combinator:
             children = node.setdefault("args", CommentedSeq())
             if len(children) == 0:
                 ui.label("(no children yet — add at least one)").classes(MUTED)
             for c_idx, child in enumerate(children):
-                _condition_editor(child, children, c_idx, depth + 1)
+                _condition_editor(child, depth + 1,
+                                  on_remove=lambda cl=children, ci=c_idx: _remove_condition(cl, ci))
         else:
             args = node.setdefault("args", CommentedMap())
-            for a in _specs_for(cond_type):
+            for a in sorted(_specs_for(cond_type), key=lambda a: _KIND_ORDER.get(a["kind"], 1)):
                 if a["kind"] in ("operand", "reference"):
                     _operand_editor(args, a["name"], a["name"],
                                     force_reference=(a["kind"] == "reference"))
                 elif a["kind"] == "int":
                     _int_field(args, a["name"])
+                elif a["kind"] == "float":
+                    _float_field(args, a["name"])
+                elif a["kind"] == "condition":
+                    _nested_condition_editor(args, a["name"], depth)
 
 
 @ui.refreshable
@@ -592,17 +684,19 @@ def _conditions_tab() -> None:
         ui.label("Conditions").classes("font-medium")
         ui.button(icon="add", on_click=lambda: _add_top_condition(conditions)) \
             .props("flat dense").tooltip("Add top-level condition")
+        _paste_button(lambda: _paste_append(conditions), "Paste condition")
     if len(conditions) == 0:
         ui.label("No conditions defined.").classes(MUTED)
     for idx, cond in enumerate(conditions):
-        _condition_editor(cond, conditions, idx, depth=0)
+        _condition_editor(cond, depth=0,
+                          on_remove=lambda cl=conditions, i=idx: _remove_condition(cl, i))
 
 
 # ---------------------------------------------------------------------------
 # Save-on-switch controller + page
 # ---------------------------------------------------------------------------
 
-STATE = {"current": None, "reverting": False}
+STATE = {"current": None, "reverting": False, "clipboard": None, "collapsed": set()}
 _TAB_BUILDERS: dict[str, Any] = {
     "Settings · Display": _display_tab,
     "Settings · Historical": _historical_tab,

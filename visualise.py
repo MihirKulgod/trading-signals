@@ -32,18 +32,23 @@ def examine_condition(examination_window: int, condition_id: str, timestamp: pd.
 
     addplots = []
 
+    VOLUME_PANEL = 1
+
     i = 0
     for panel in display_panels:
+        if i == VOLUME_PANEL:
+            i += 1
         hadSuccess = False
         for item in panel.items():
             id, color = item
-            hadSuccess = hadSuccess or try_addplot(id, window, addplots, i, None, color)
+            added = try_addplot(id, window, addplots, i, None, color)
+            hadSuccess = hadSuccess or added
         if hadSuccess:
             i += 1
 
     for agg in signal_aggregates:
         col = f"{condition_id}_{agg}"
-        try_addplot(col, window, addplots, i, "Condition", "black")
+        try_addplot(col, window, addplots, i, condition_id, "black")
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 

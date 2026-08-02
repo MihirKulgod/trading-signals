@@ -97,6 +97,25 @@ class SlopeCondition(BaseModel):
     args: SlopeArgs
 
 
+class RecentCrossoverUpwardArgs(BaseModel):
+    """Args for recent_crossover_upward: recency of ``a`` crossing up over ``b``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    a: ReferenceOperand
+    b: ReferenceOperand
+    window: int
+    default: float
+
+
+class RecentCrossoverUpwardCondition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    condition: Literal["recent_crossover_upward"]
+    id: str
+    args: RecentCrossoverUpwardArgs
+
+
 class CombinatorCondition(BaseModel):
     """``and`` / ``or`` / ``not`` -- ``args`` is a list of child conditions."""
 
@@ -115,14 +134,55 @@ class CombinatorCondition(BaseModel):
         return self
 
 
+class KernelArgs(BaseModel):
+    """Shape a nested condition's output: ``input`` plus the kernel's float params."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    input: "Condition"
+    center: float = 0.0
+    width: float = 1.0
+    peak: float = 1.0
+    floor: float = 0.0
+    sharpness: float = 1.0
+
+
+class KernelCondition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    condition: Literal["kernel"]
+    id: str
+    args: KernelArgs
+
+
+class MultiplyArgs(BaseModel):
+    """Args for multiply: ``x`` times the wrapped condition's value."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    input: "Condition"
+    x: float = 1.0
+
+
+class MultiplyCondition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    condition: Literal["multiply"]
+    id: str
+    args: MultiplyArgs
+
+
 # The recursive union every condition slot (top-level or nested child) accepts.
 Condition = Annotated[
-    Union[CombinatorCondition, SpreadCondition, SlopeCondition],
+    Union[CombinatorCondition, SpreadCondition, SlopeCondition, KernelCondition,
+          MultiplyCondition, RecentCrossoverUpwardCondition],
     Field(discriminator="condition"),
 ]
 
-# ``CombinatorCondition.args`` forward-references ``Condition``; resolve it now.
+# ``args`` fields forward-reference ``Condition``; resolve them now.
 CombinatorCondition.model_rebuild()
+KernelArgs.model_rebuild()
+MultiplyArgs.model_rebuild()
 
 
 # ---------------------------------------------------------------------------

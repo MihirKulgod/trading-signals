@@ -78,8 +78,11 @@ def find_signal_onsets(df: pd.DataFrame, condition_cols: list[str]):
     for col in condition_cols:
         if col not in df.columns:
             raise ColumnNotFoundError(col, df)
+        
+        threshold = 0
+        
         onset_timestamps = []
-        onsets = (df[col] >= 0) & (df[col].shift(1) < 0)
+        onsets = (df[col] >= threshold) & (df[col].shift(1) < threshold)
         onset_timestamps = df.index[onsets]
         result[col] = onset_timestamps
     return result
