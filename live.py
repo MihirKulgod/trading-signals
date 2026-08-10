@@ -5,6 +5,7 @@ import pandas as pd
 import yaml
 from kiteconnect import KiteConnect
 
+from condition import disabled_condition_ids
 from data_processing import generate_base
 from data_retrieval import get_historical, historical_csv_path, parse_instruments
 from live_candles import LiveCandleBuilder
@@ -17,13 +18,22 @@ CONFIG_PATH = "config/strategy.yaml"
 SETTINGS_PATH = "config/settings.yaml"
 
 RECOMPUTE_INTERVAL_SECONDS = 30
-WINDOW_DAYS = 3
+WINDOW_DAYS = 7
 
 def main():
     with open(CONFIG_PATH) as f:
         config = yaml.safe_load(f)
     with open(SETTINGS_PATH) as f:
         settings = yaml.safe_load(f)
+
+    disabled = disabled_condition_ids(config)
+    if disabled:
+        print("=" * 70)
+        print(f"WARNING: {len(disabled)} condition(s) are DISABLED and will NOT alert:")
+        for condition_id in disabled:
+            print(f"    {condition_id}")
+        print("Re-enable them in the config editor before relying on live signals.")
+        print("=" * 70)
 
     kite: KiteConnect = get_kite()
 

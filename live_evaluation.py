@@ -2,7 +2,7 @@ from collections import deque
 
 import pandas as pd
 
-from condition import build_condition, build_definitions, MarketContext
+from condition import build_selected_conditions, MarketContext
 from data_processing import generate_base_window
 from notifications import Notifier
 
@@ -13,9 +13,7 @@ class LiveEvaluator:
         self.instruments_data = instruments_data
         self.window_days = window_days
         self.notifier = notifier
-        self.definitions = build_definitions(config)
-        built = [build_condition(c, self.definitions) for c in config["conditions"]]
-        self.conditions = list({id(c): c for c in built}.values())
+        self.conditions = build_selected_conditions(config)
         self.score_history: dict[str, deque] = {
             c.id: deque(maxlen=history_length) for c in self.conditions
         }
