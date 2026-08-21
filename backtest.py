@@ -12,9 +12,10 @@ import app_paths
 from app_logging import get_logger
 from condition import (build_selected_conditions, disabled_condition_ids,
                        reference_warnings, reset_reference_warnings)
-from data_processing import (append_signal_aggregates, find_signal_days,
-                             find_valid_days, format_signal_stat, generate_base,
-                             generate_signals, signal_stats)
+from data_processing import (append_signal_aggregates, blocker_tally,
+                             find_signal_days, find_valid_days, format_signal_stat,
+                             generate_base, generate_signals, session_blockers,
+                             signal_stats)
 from data_retrieval import get_historical, parse_instruments
 from login import get_kite
 from visualise import examine_condition
@@ -59,9 +60,14 @@ def tier_columns(df, condition_cols, children_map):
 
 def report_days(df, condition_cols, days, children_map=None):
     stats = signal_stats(df, list(days))
+    blockers = session_blockers(df, list(days), children_map or {})
     print(f"\nEvaluated {len(df)} candles across {len(condition_cols)} conditions")
     for condition_id in condition_cols:
         print(f"  {condition_id}: {format_signal_stat(stats[condition_id])}")
+        tally = blocker_tally(blockers.get(condition_id, {}))
+        if tally:
+            worst = ", ".join(f"{child} ({count})" for child, count in tally[:3])
+            print(f"      held back by: {worst}")
         for tier in (children_map or {}).get(condition_id, []):
             if tier in stats:
                 print(f"      {tier}: {format_signal_stat(stats[tier])}")
@@ -74,6 +80,14 @@ def report_reference_warnings():
     for (reason, instrument_id, timeframe, col_name), timestamp in problems:
         print(f"  {reason}: {instrument_id}/{timeframe}/{col_name} (first seen at {timestamp})")
     print("Scores that depended on these references are unreliable.")
+
+def chart_name(timestamp, minutes: int, blocker) -> str:
+    """Filename stem stating the session's outcome."""
+    if minutes:
+        return f"{timestamp.date()} HIT {minutes}min"
+    if blocker:
+        return f"{timestamp.date()} blocked by {blocker[0]}"
+    return f"{timestamp.date()}"
 
 def render_day_charts(settings, instruments_data, df, children_map, days):
     display = settings["display"]
@@ -94,6 +108,10 @@ def render_day_charts(settings, instruments_data, df, children_map, days):
         if stale.is_dir():
             shutil.rmtree(stale)
 
+    dates = pd.Series(df.index.date, index=df.index)
+    minutes_by_day = {c: (df[c] >= 0).groupby(dates).sum().to_dict() for c in days}
+    blockers = session_blockers(df, list(days), children_map)
+
     tasks = [(c, t) for c in days for t in days[c]]
     for condition_col, timestamp in tqdm(tasks, desc="[Visualizing]"):
         examine_condition(
@@ -104,6 +122,11 @@ def render_day_charts(settings, instruments_data, df, children_map, days):
             display["display_panels"],
             signal_aggregates,
             children_map.get(condition_col, []),
+            name=chart_name(
+                timestamp,
+                int(minutes_by_day[condition_col].get(timestamp.date(), 0)),
+                blockers.get(condition_col, {}).get(timestamp.date()),
+            ),
         )
 
 def report_selection(config, only):

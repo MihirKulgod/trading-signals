@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime
+from urllib.parse import quote
 
 import yaml
 from nicegui import ui
@@ -269,6 +270,83 @@ def _live_scores() -> None:
                 ui.label(cid).classes("font-medium")
                 ui.space()
                 ui.label(f"{score:+.3f}").classes(MUTED)
+
+CHARTS_ROUTE = "/charts"
+
+def mount_charts() -> None:
+    """Serve the rendered charts so the Charts tab can display them in place."""
+    from nicegui import app as nicegui_app
+
+    app_paths.output_dir().mkdir(parents=True, exist_ok=True)
+    nicegui_app.add_static_files(CHARTS_ROUTE, str(app_paths.output_dir()))
+
+def _chart_blocks() -> list[str]:
+    root = app_paths.output_dir()
+    if not root.is_dir():
+        return []
+    return sorted(d.name for d in root.iterdir() if d.is_dir())
+
+def _chart_images(block: str) -> list:
+    folder = app_paths.output_dir() / block
+    if not folder.is_dir():
+        return []
+    return sorted(folder.glob("*.png"), key=lambda p: p.name)
+
+@ui.refreshable
+def charts_tab() -> None:
+    blocks = _chart_blocks()
+    if not blocks:
+        ui.label("No charts yet — run a backtest with 'render charts' on, "
+                 "or use a condition block's run button.").classes(MUTED)
+        return
+
+    state = {"block": blocks[0] if blocks[0] in blocks else None, "image": None}
+
+    with ui.card().classes("w-full"):
+        with ui.row().classes("items-center gap-3"):
+            ui.select(blocks, value=state["block"], label="condition block",
+                      on_change=lambda e: _select_block(state, e.value)) \
+                .props("dense").classes("min-w-[280px]")
+            ui.button(icon="refresh", on_click=charts_tab.refresh) \
+                .props("flat dense").tooltip("Rescan the output folder")
+
+    _chart_viewer(state)
+
+def _select_block(state: dict, block: str) -> None:
+    state["block"] = block
+    state["image"] = None
+    _chart_viewer.refresh(state)
+
+@ui.refreshable
+def _chart_viewer(state: dict) -> None:
+    images = _chart_images(state["block"]) if state["block"] else []
+    if not images:
+        ui.label("This block has no rendered sessions.").classes(MUTED)
+        return
+
+    hits = [p for p in images if "HIT" in p.name]
+    ui.label(f"{len(images)} sessions · {len(hits)} hit").classes(MUTED)
+
+    with ui.row().classes("w-full gap-4 items-start no-wrap"):
+        with ui.column().classes("min-w-[320px] max-h-[70vh] overflow-auto"):
+            for path in images:
+                hit = "HIT" in path.name
+                with ui.row().classes("items-center gap-2 cursor-pointer") \
+                        .on("click", lambda p=path: _show_image(state, p)):
+                    ui.badge("hit" if hit else "—").props(
+                        "color=positive" if hit else "color=grey")
+                    ui.label(path.stem).classes(
+                        "text-sm" + ("" if hit else " text-gray-500"))
+        with ui.column().classes("grow"):
+            selected = state["image"] or images[0]
+            ui.label(selected.stem).classes("font-medium")
+            # Chart names carry spaces, so the src has to be percent-encoded.
+            src = f"{CHARTS_ROUTE}/{quote(state['block'])}/{quote(selected.name)}"
+            ui.image(src).classes("w-full")
+
+def _show_image(state: dict, path) -> None:
+    state["image"] = path
+    _chart_viewer.refresh(state)
 
 def refresh_operations() -> None:
     """Called on a timer by the page so job and engine state stay current."""

@@ -3,6 +3,7 @@ import os
 import mplfinance as mpf
 import pandas as pd
 
+import app_paths
 import condition
 
 
@@ -29,8 +30,11 @@ CHILD_COLORS = [
     "tab:purple", "tab:brown", "tab:pink", "tab:olive",
 ]
 
-def examine_condition(examination_window: int, condition_id: str, timestamp: pd.Timestamp, df: pd.DataFrame, display_panels: list[dict], signal_aggregates, children: list[str] = None):
-    output_path = f"output/{condition_id}/{timestamp.date()}/{timestamp.time().strftime('%H:%M')}.png"
+def examine_condition(examination_window: int, condition_id: str, timestamp: pd.Timestamp, df: pd.DataFrame, display_panels: list[dict], signal_aggregates, children: list[str] = None, name: str = None):
+    # name carries the session's outcome so the file listing answers "which days
+    # did this fire, and what blocked the rest" without opening anything.
+    stem = name or f"{timestamp.date()} {timestamp.time().strftime('%H-%M')}"
+    output_path = str(app_paths.output_dir() / str(condition_id) / f"{stem}.png")
 
     # ffill: the display bar containing the timestamp. bfill would pick the next
     # bar instead, running past the session end into the following day.

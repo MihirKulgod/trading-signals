@@ -215,6 +215,45 @@ def signal_stats(df: pd.DataFrame, condition_cols: list[str]):
 def format_signal_stat(stat: dict) -> str:
     return f"{stat['days']} / {stat['sessions']} days, {stat['minutes']} min"
 
+def session_blockers(df: pd.DataFrame, condition_cols: list[str], children_map: dict):
+    """
+    Per condition, per session: which child held it back, and by how much.
+
+    Taken at the bar where the parent scored highest -- the moment it came
+    closest to opening. Composite conditions score as the min of their children,
+    so the lowest-scoring child there is the one to loosen. Sessions the
+    condition already fired on are reported with a blocker of None.
+    """
+    dates = pd.Series(df.index.date, index=df.index)
+    result = {}
+    for col in condition_cols:
+        children = [c for c in children_map.get(col, []) if c in df.columns]
+        if col not in df.columns or not children:
+            continue
+        per_session = {}
+        for day, rows in df.groupby(dates):
+            parent = rows[col]
+            if not parent.notna().any():
+                continue
+            best = parent.idxmax()
+            if parent.loc[best] >= 0:
+                per_session[day] = None
+                continue
+            scores = rows.loc[best, children]
+            if not scores.notna().any():
+                continue
+            per_session[day] = (scores.idxmin(), float(scores.min()), float(parent.loc[best]))
+        result[col] = per_session
+    return result
+
+def blocker_tally(blockers: dict) -> list[tuple[str, int]]:
+    """Which child blocked the most sessions, worst first."""
+    counts = {}
+    for entry in blockers.values():
+        if entry is not None:
+            counts[entry[0]] = counts.get(entry[0], 0) + 1
+    return sorted(counts.items(), key=lambda kv: -kv[1])
+
 def find_signal_days(df: pd.DataFrame, condition_cols: list[str]):
     result = {}
     for col in condition_cols:

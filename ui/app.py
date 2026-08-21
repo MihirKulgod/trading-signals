@@ -48,6 +48,7 @@ TAB_DOC = {
     "Strategy · Conditions": "strategy",
     "Run · Backtest": None,
     "Run · Live": None,
+    "Run · Charts": None,
 }
 
 
@@ -912,6 +913,7 @@ _TAB_BUILDERS: dict[str, Any] = {
     "Strategy · Conditions": _conditions_tab,
     "Run · Backtest": operations.backtest_tab,
     "Run · Live": operations.live_tab,
+    "Run · Charts": operations.charts_tab,
 }
 
 
@@ -988,6 +990,7 @@ def index() -> None:
 
 
 def main() -> None:
+    operations.mount_charts()
     ui.run(title="Config Editor", port=8080, reload=False, show=False)
 
 
