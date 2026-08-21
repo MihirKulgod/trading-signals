@@ -98,6 +98,11 @@ def build_developing_frame(candles_1m_days, minutes: int, strategy, completed, d
     ohlcv = completed[OHLCV_COLUMNS]
     candles = concat_days(candles_1m_days)
 
+    if completed.index.equals(candles.index):
+        # One base candle per bucket, so a bucket is complete the moment it
+        # exists and the developing frame is the completed one.
+        return completed
+
     bucket = bucket_labels(candles_1m_days, minutes)
     grouped = candles.groupby(bucket)
     partial = pd.DataFrame({

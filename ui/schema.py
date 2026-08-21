@@ -287,7 +287,7 @@ class ExistsInWindowArgs(BaseModel):
 
     input: "Condition"
     width: int
-    include_current: bool
+    same_day: bool = True
 
 
 class ExistsInWindowCondition(BaseModel):
@@ -304,7 +304,7 @@ class ForAllInWindowArgs(BaseModel):
 
     input: "Condition"
     width: int
-    include_current: bool
+    same_day: bool = True
 
 
 class ForAllInWindowCondition(BaseModel):

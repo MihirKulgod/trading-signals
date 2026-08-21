@@ -29,8 +29,15 @@ class Condition(ABC):
     def __call__(self, ctx: "MarketContext") -> float:
         key = (id(self), ctx.time_offset)
         if key not in ctx.memo:
-            ctx.memo[key] = self.evaluate(ctx)
-        result = ctx.memo[key]
+            # Remember whether evaluating this subtree reached an earlier
+            # session, so a memoised hit reports it too instead of looking
+            # same-day to the enclosing window.
+            outer, ctx.crossed_day = ctx.crossed_day, False
+            value = self.evaluate(ctx)
+            ctx.memo[key] = (value, ctx.crossed_day)
+            ctx.crossed_day = outer or ctx.crossed_day
+        result, crossed = ctx.memo[key]
+        ctx.crossed_day = ctx.crossed_day or crossed
         ctx.trace[self.id] = result
         return result
 
@@ -94,8 +101,11 @@ class MarketContext:
     def __init__(self, instruments_data: list[dict], current_time: pd.Timestamp):
         self.instruments_data, self.current_time = instruments_data, current_time
         self.trace: dict[str, float] = {}
-        self.memo: dict[tuple, float] = {}
+        self.memo: dict[tuple, tuple] = {}
         self.time_offset = 0
+        # Set by get() when a lookup lands on an earlier session, so a window
+        # restricted to same_day can drop that offset.
+        self.crossed_day = False
 
     def get(self, data_src: dict):
         match data_src["type"]:
@@ -144,6 +154,9 @@ class MarketContext:
                     # read from the far end of the frame.
                     warn_bad_reference("before first candle", data_src, self.current_time)
                     return math.nan
+
+                if df.index[pos].date() != self.current_time.date():
+                    self.crossed_day = True
 
                 value = df[col_name].iloc[pos]
                 if pd.isna(value):
@@ -356,41 +369,49 @@ class Boost(Condition):
 
     def sub_conditions(self): return [self.base, self.bonus]
 
-class ExistsInWindow(Condition):
-    def __init__(self, id, condition: Condition, width, include_current):
+class WindowQuantifier(Condition):
+    """
+    Evaluates a child across the last ``width`` closed candles.
+
+    Offsets start at 1, never 0: every timeframe exposes its forming candle at
+    lookback 0, and "did this happen in the last X candles" must not answer yes
+    on a momentary move inside the candle still being built.
+
+    With ``same_day`` an offset that reaches an earlier session is dropped, so a
+    block cannot fire at the open on the back of yesterday's candles.
+    """
+
+    def __init__(self, id, condition: Condition, width, same_day=True):
         super().__init__(id)
         self.condition = condition
         self.width = width
-        self.include_current = include_current
+        self.same_day = same_day
 
-    def evaluate(self, ctx: MarketContext) -> float:
-        start = 0 if self.include_current else 1
+    def scores(self, ctx: MarketContext) -> list:
         saved_offset = ctx.time_offset
-        scores = []
-        for offset in range(start + self.width - 1, start - 1, -1):
+        found = []
+        for offset in range(self.width, 0, -1):
             ctx.time_offset = saved_offset + offset
-            scores.append(self.condition(ctx))
+            ctx.crossed_day = False
+            score = self.condition(ctx)
+            if not (self.same_day and ctx.crossed_day):
+                found.append(score)
         ctx.time_offset = saved_offset
-        return math.nan if has_nan(scores) else max(scores)
+        ctx.crossed_day = False
+        return found
 
     def sub_conditions(self): return [self.condition]
 
-class ForAllInWindow(Condition):
-    def __init__(self, id, condition: Condition, width, include_current):
-        super().__init__(id)
-        self.condition = condition
-        self.width = width
-        self.include_current = include_current
-
+class ExistsInWindow(WindowQuantifier):
     def evaluate(self, ctx: MarketContext) -> float:
-        start = 0 if self.include_current else 1
-        saved_offset = ctx.time_offset
-        scores = []
-        for offset in range(start + self.width - 1, start - 1, -1):
-            ctx.time_offset = saved_offset + offset
-            scores.append(self.condition(ctx))
-        ctx.time_offset = saved_offset
-        return math.nan if has_nan(scores) else min(scores)
+        scores = self.scores(ctx)
+        # No candle left in this session yet -- unknown rather than false.
+        return math.nan if not scores or has_nan(scores) else max(scores)
+
+class ForAllInWindow(WindowQuantifier):
+    def evaluate(self, ctx: MarketContext) -> float:
+        scores = self.scores(ctx)
+        return math.nan if not scores or has_nan(scores) else min(scores)
 
     def sub_conditions(self): return [self.condition]
 
@@ -484,12 +505,12 @@ CONDITION_REGISTRY: dict[str, ConditionSpec] = {
         ArgSpec("base", "condition"), ArgSpec("bonus", "condition"))),
 
     "exists_in_window": ConditionSpec(ExistsInWindow, (
-        ArgSpec("input", "condition"),
-        ArgSpec("width", "int"), ArgSpec("include_current", "bool"))),
+        ArgSpec("input", "condition"), ArgSpec("width", "int"),
+        ArgSpec("same_day", "bool"))),
 
     "for_all_in_window": ConditionSpec(ForAllInWindow, (
-        ArgSpec("input", "condition"),
-        ArgSpec("width", "int"), ArgSpec("include_current", "bool"))),
+        ArgSpec("input", "condition"), ArgSpec("width", "int"),
+        ArgSpec("same_day", "bool"))),
 
     "ref": ConditionSpec(None, (ArgSpec("target", "definition_id"),)),
 }
