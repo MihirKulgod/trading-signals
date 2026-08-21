@@ -292,6 +292,19 @@ def _chart_images(block: str) -> list:
         return []
     return sorted(folder.glob("*.png"), key=lambda p: p.name)
 
+def _chart_windows(block: str) -> dict:
+    """Stretches the block was true, written beside its charts by the backtest."""
+    from backtest import WINDOWS_FILE
+
+    path = app_paths.output_dir() / block / WINDOWS_FILE
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        log.warning("could not read active windows for %s", block)
+        return {}
+
 # Module-level so the selection survives leaving and re-entering the tab, which
 # re-runs the builder. Stored by name rather than Path so it still matches after
 # the output folder is rescanned.
@@ -357,6 +370,19 @@ def _chart_viewer() -> None:
             # Chart names carry spaces, so the src has to be percent-encoded.
             src = f"{CHARTS_ROUTE}/{quote(block)}/{quote(selected.name)}"
             ui.image(src).classes("w-full")
+            _active_windows(block, selected)
+
+def _active_windows(block: str, selected) -> None:
+    runs = _chart_windows(block).get(selected.stem[:10], [])  # names start YYYY-MM-DD
+    if not runs:
+        return
+    total = sum(bars for _, _, bars in runs)
+    ui.label(f"Active for {total} min over {len(runs)} "
+             f"window{'' if len(runs) == 1 else 's'}").classes("font-medium")
+    with ui.row().classes("items-center gap-2 flex-wrap"):
+        for start, end, bars in runs:
+            span = start if start == end else f"{start} – {end}"
+            ui.badge(f"{span}  ({bars} min)").props("color=positive outline")
 
 def _show_image(name: str) -> None:
     CHART_STATE["image"] = name

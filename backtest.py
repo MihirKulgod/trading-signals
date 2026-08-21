@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import shutil
 import warnings
@@ -12,7 +13,7 @@ import app_paths
 from app_logging import get_logger
 from condition import (build_selected_conditions, disabled_condition_ids,
                        reference_warnings, reset_reference_warnings)
-from data_processing import (append_signal_aggregates, blocker_tally,
+from data_processing import (active_windows, append_signal_aggregates, blocker_tally,
                              find_signal_days, find_valid_days, format_signal_stat,
                              generate_base, generate_signals, session_blockers,
                              signal_stats)
@@ -81,6 +82,22 @@ def report_reference_warnings():
         print(f"  {reason}: {instrument_id}/{timeframe}/{col_name} (first seen at {timestamp})")
     print("Scores that depended on these references are unreliable.")
 
+WINDOWS_FILE = "windows.json"
+
+def save_active_windows(condition_id, sessions: dict) -> None:
+    """
+    Write the stretches a condition was true next to its charts, so the viewer
+    can list them without reloading the signal frame.
+    """
+    folder = OUTPUT_DIR / str(condition_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    payload = {
+        str(day): [[start.strftime("%H:%M"), end.strftime("%H:%M"), int(bars)]
+                   for start, end, bars in runs]
+        for day, runs in sessions.items()
+    }
+    (folder / WINDOWS_FILE).write_text(json.dumps(payload, indent=1), encoding="utf-8")
+
 def chart_name(timestamp, minutes: int, blocker) -> str:
     """Filename stem stating the session's outcome."""
     if minutes:
@@ -111,6 +128,10 @@ def render_day_charts(settings, instruments_data, df, children_map, days):
     dates = pd.Series(df.index.date, index=df.index)
     minutes_by_day = {c: (df[c] >= 0).groupby(dates).sum().to_dict() for c in days}
     blockers = session_blockers(df, list(days), children_map)
+
+    windows = active_windows(df, list(days))
+    for condition_id in days:
+        save_active_windows(condition_id, windows.get(condition_id, {}))
 
     tasks = [(c, t) for c in days for t in days[c]]
     for condition_col, timestamp in tqdm(tasks, desc="[Visualizing]"):
