@@ -292,6 +292,11 @@ def _chart_images(block: str) -> list:
         return []
     return sorted(folder.glob("*.png"), key=lambda p: p.name)
 
+# Module-level so the selection survives leaving and re-entering the tab, which
+# re-runs the builder. Stored by name rather than Path so it still matches after
+# the output folder is rescanned.
+CHART_STATE: dict = {"block": None, "image": None}
+
 @ui.refreshable
 def charts_tab() -> None:
     blocks = _chart_blocks()
@@ -300,29 +305,37 @@ def charts_tab() -> None:
                  "or use a condition block's run button.").classes(MUTED)
         return
 
-    state = {"block": blocks[0] if blocks[0] in blocks else None, "image": None}
+    if CHART_STATE["block"] not in blocks:  # first visit, or the block is gone
+        CHART_STATE["block"] = blocks[0]
+        CHART_STATE["image"] = None
 
     with ui.card().classes("w-full"):
         with ui.row().classes("items-center gap-3"):
-            ui.select(blocks, value=state["block"], label="condition block",
-                      on_change=lambda e: _select_block(state, e.value)) \
+            ui.select(blocks, value=CHART_STATE["block"], label="condition block",
+                      on_change=lambda e: _select_block(e.value)) \
                 .props("dense").classes("min-w-[280px]")
             ui.button(icon="refresh", on_click=charts_tab.refresh) \
                 .props("flat dense").tooltip("Rescan the output folder")
 
-    _chart_viewer(state)
+    _chart_viewer()
 
-def _select_block(state: dict, block: str) -> None:
-    state["block"] = block
-    state["image"] = None
-    _chart_viewer.refresh(state)
+def _select_block(block: str) -> None:
+    CHART_STATE["block"] = block
+    CHART_STATE["image"] = None
+    _chart_viewer.refresh()
 
 @ui.refreshable
-def _chart_viewer(state: dict) -> None:
-    images = _chart_images(state["block"]) if state["block"] else []
+def _chart_viewer() -> None:
+    block = CHART_STATE["block"]
+    images = _chart_images(block) if block else []
     if not images:
         ui.label("This block has no rendered sessions.").classes(MUTED)
         return
+
+    names = [p.name for p in images]
+    if CHART_STATE["image"] not in names:  # re-rendered charts change their names
+        CHART_STATE["image"] = names[0]
+    selected = images[names.index(CHART_STATE["image"])]
 
     hits = [p for p in images if "HIT" in p.name]
     ui.label(f"{len(images)} sessions · {len(hits)} hit").classes(MUTED)
@@ -331,22 +344,23 @@ def _chart_viewer(state: dict) -> None:
         with ui.column().classes("min-w-[320px] max-h-[70vh] overflow-auto"):
             for path in images:
                 hit = "HIT" in path.name
-                with ui.row().classes("items-center gap-2 cursor-pointer") \
-                        .on("click", lambda p=path: _show_image(state, p)):
+                current = path.name == selected.name
+                with ui.row().classes("items-center gap-2 cursor-pointer rounded px-1"
+                                      + (" bg-blue-100" if current else "")) \
+                        .on("click", lambda n=path.name: _show_image(n)):
                     ui.badge("hit" if hit else "—").props(
                         "color=positive" if hit else "color=grey")
                     ui.label(path.stem).classes(
                         "text-sm" + ("" if hit else " text-gray-500"))
         with ui.column().classes("grow"):
-            selected = state["image"] or images[0]
             ui.label(selected.stem).classes("font-medium")
             # Chart names carry spaces, so the src has to be percent-encoded.
-            src = f"{CHARTS_ROUTE}/{quote(state['block'])}/{quote(selected.name)}"
+            src = f"{CHARTS_ROUTE}/{quote(block)}/{quote(selected.name)}"
             ui.image(src).classes("w-full")
 
-def _show_image(state: dict, path) -> None:
-    state["image"] = path
-    _chart_viewer.refresh(state)
+def _show_image(name: str) -> None:
+    CHART_STATE["image"] = name
+    _chart_viewer.refresh()
 
 def refresh_operations() -> None:
     """Called on a timer by the page so job and engine state stay current."""
