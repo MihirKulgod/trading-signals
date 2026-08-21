@@ -20,3 +20,5 @@ output/
 
 # Tools
 .claude/
+# Runtime logs
+logs/
