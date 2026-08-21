@@ -44,9 +44,21 @@ class ReferenceOperand(BaseModel):
     lookback: int = 0
 
 
+class ConditionOperand(BaseModel):
+    """
+    A nested condition used where a raw value would normally go, so computed
+    scores (candle_body, kernel, ...) can be compared against values/references.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["condition"]
+    input: "Condition"
+
+
 # Discriminated on the ``type`` tag, exactly like MarketContext.get's match.
 Operand = Annotated[
-    Union[ValueOperand, ReferenceOperand],
+    Union[ValueOperand, ReferenceOperand, ConditionOperand],
     Field(discriminator="type"),
 ]
 
@@ -76,6 +88,31 @@ class SlopeArgs(BaseModel):
     lookback: int
 
 
+class CandleReferenceOperand(BaseModel):
+    """
+    A candle on one instrument/timeframe. Unlike ReferenceOperand there is no
+    ``col_name``: the condition using it picks the columns (e.g. candle_body
+    reads ``close`` and ``open``).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["reference"]
+    instrument_id: str
+    timeframe_type: str
+    timeframe: str
+    lookback: int = 0
+
+
+class CandleBodyArgs(BaseModel):
+    """Args for candle_body: ``(close - open) / normalizer`` for one candle."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candle: CandleReferenceOperand
+    normalizer: Operand
+
+
 # ---------------------------------------------------------------------------
 # Conditions (recursive discriminated union on the ``condition`` tag)
 # ---------------------------------------------------------------------------
@@ -86,6 +123,7 @@ class SpreadCondition(BaseModel):
 
     condition: Literal["normalized_spread", "above", "below"]
     id: str
+    enabled: bool = True
     args: SpreadArgs
 
 
@@ -94,7 +132,58 @@ class SlopeCondition(BaseModel):
 
     condition: Literal["increasing", "decreasing"]
     id: str
+    enabled: bool = True
     args: SlopeArgs
+
+
+class CandleBodyCondition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    condition: Literal["candle_body"]
+    id: str
+    enabled: bool = True
+    args: CandleBodyArgs
+
+
+class CandleWickArgs(BaseModel):
+    """Args for candle_wick: upper or lower wick length of one candle."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candle: CandleReferenceOperand
+    side: Literal["upper", "lower"]
+    normalizer: Operand
+
+
+class CandleWickCondition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    condition: Literal["candle_wick"]
+    id: str
+    enabled: bool = True
+    args: CandleWickArgs
+
+
+class CompareArgs(BaseModel):
+    """Args for compare: is ``a`` on the chosen side of ``b + c * x``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    a: Operand
+    b: Operand
+    c: Operand
+    x: float
+    direction: Literal["<", ">"]
+    normalizer: Operand
+
+
+class CompareCondition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    condition: Literal["compare"]
+    id: str
+    enabled: bool = True
+    args: CompareArgs
 
 
 class RecentCrossoverUpwardArgs(BaseModel):
@@ -113,6 +202,7 @@ class RecentCrossoverUpwardCondition(BaseModel):
 
     condition: Literal["recent_crossover_upward"]
     id: str
+    enabled: bool = True
     args: RecentCrossoverUpwardArgs
 
 
@@ -121,15 +211,16 @@ class CombinatorCondition(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    condition: Literal["and", "or", "not"]
+    condition: Literal["and", "or", "not", "sequential"]
     id: str
+    enabled: bool = True
     args: list["Condition"]
 
     @model_validator(mode="after")
     def _check_arity(self) -> "CombinatorCondition":
         if self.condition == "not" and len(self.args) != 1:
             raise ValueError("'not' must have exactly one child in args")
-        if self.condition in ("and", "or") and len(self.args) < 1:
+        if self.condition in ("and", "or", "sequential") and len(self.args) < 1:
             raise ValueError(f"'{self.condition}' must have at least one child in args")
         return self
 
@@ -152,6 +243,7 @@ class KernelCondition(BaseModel):
 
     condition: Literal["kernel"]
     id: str
+    enabled: bool = True
     args: KernelArgs
 
 
@@ -169,25 +261,142 @@ class MultiplyCondition(BaseModel):
 
     condition: Literal["multiply"]
     id: str
+    enabled: bool = True
     args: MultiplyArgs
+
+
+class BoostArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base: "Condition"
+    bonus: "Condition"
+    k: float = 1.0
+
+
+class BoostCondition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    condition: Literal["boost"]
+    id: str
+    enabled: bool = True
+    args: BoostArgs
+
+
+class ExistsInWindowArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    input: "Condition"
+    width: int
+    include_current: bool
+
+
+class ExistsInWindowCondition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    condition: Literal["exists_in_window"]
+    id: str
+    enabled: bool = True
+    args: ExistsInWindowArgs
+
+
+class ForAllInWindowArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    input: "Condition"
+    width: int
+    include_current: bool
+
+
+class ForAllInWindowCondition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    condition: Literal["for_all_in_window"]
+    id: str
+    enabled: bool = True
+    args: ForAllInWindowArgs
+
+
+class RefArgs(BaseModel):
+    """Args for ref: the id of an entry in the top-level ``definitions`` list."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target: str
+
+
+class RefCondition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    condition: Literal["ref"]
+    id: str
+    enabled: bool = True
+    args: RefArgs
 
 
 # The recursive union every condition slot (top-level or nested child) accepts.
 Condition = Annotated[
-    Union[CombinatorCondition, SpreadCondition, SlopeCondition, KernelCondition,
-          MultiplyCondition, RecentCrossoverUpwardCondition],
+    Union[CombinatorCondition, SpreadCondition, SlopeCondition, CandleBodyCondition,
+          CompareCondition, CandleWickCondition,
+          KernelCondition, MultiplyCondition, BoostCondition, ExistsInWindowCondition,
+          ForAllInWindowCondition, RecentCrossoverUpwardCondition, RefCondition],
     Field(discriminator="condition"),
 ]
 
+
+def walk_condition(cond) -> "list":
+    """Yield a validated condition model and every nested condition under it."""
+    out = [cond]
+    args = cond.args
+    if isinstance(args, list):
+        for child in args:
+            out.extend(walk_condition(child))
+    else:
+        for field in ("input", "base", "bonus"):
+            child = getattr(args, field, None)
+            if child is not None:
+                out.extend(walk_condition(child))
+        for field in ("a", "b", "c", "normalizer"):
+            operand = getattr(args, field, None)
+            if operand is not None and getattr(operand, "type", None) == "condition":
+                out.extend(walk_condition(operand.input))
+    return out
+
 # ``args`` fields forward-reference ``Condition``; resolve them now.
+ConditionOperand.model_rebuild()
+SpreadArgs.model_rebuild()
+SlopeArgs.model_rebuild()
+CandleBodyArgs.model_rebuild()
+CompareArgs.model_rebuild()
+CandleWickArgs.model_rebuild()
 CombinatorCondition.model_rebuild()
 KernelArgs.model_rebuild()
 MultiplyArgs.model_rebuild()
+BoostArgs.model_rebuild()
+ExistsInWindowArgs.model_rebuild()
+ForAllInWindowArgs.model_rebuild()
+SpreadCondition.model_rebuild()
+SlopeCondition.model_rebuild()
+CandleBodyCondition.model_rebuild()
+CompareCondition.model_rebuild()
+CandleWickCondition.model_rebuild()
 
 
 # ---------------------------------------------------------------------------
 # Strategy (config/strategy.yaml)
 # ---------------------------------------------------------------------------
+
+
+class TimeframeSpec(BaseModel):
+    """
+    One configured granularity. ``developing`` makes ``lookback: 0`` resolve to
+    the partially formed candle at the current moment instead of the last
+    completed one; a bare int is shorthand for ``developing: false``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    minutes: int
+    developing: bool = False
 
 
 class Instrument(BaseModel):
@@ -205,8 +414,8 @@ class Instrument(BaseModel):
     name: Optional[str] = None
     instrument_type: Optional[str] = None
     expiry_rule: Optional[str] = None
-    # timeframe_type (e.g. "intraday") -> list of minute granularities
-    timeframes: dict[str, list[int]]
+    # timeframe_type (e.g. "intraday") -> list of granularities
+    timeframes: dict[str, list[Union[int, TimeframeSpec]]]
 
     @model_validator(mode="after")
     def _check_identity(self) -> "Instrument":
@@ -258,7 +467,49 @@ class Strategy(BaseModel):
     description: Optional[str] = None
     general: General
     ta: list[Indicator]
+    definitions: list["Condition"] = Field(default_factory=list)
     conditions: list["Condition"]
+
+    @model_validator(mode="after")
+    def _check_ref_targets(self) -> "Strategy":
+        defined = {d.id for d in self.definitions}
+        for root in list(self.definitions) + list(self.conditions):
+            for node in walk_condition(root):
+                if node.condition == "ref" and node.args.target not in defined:
+                    raise ValueError(
+                        f"condition {node.id!r}: ref target {node.args.target!r} "
+                        "is not present in definitions"
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def _check_unique_ids(self) -> "Strategy":
+        origin = {}
+        for section, roots in (("definitions", self.definitions), ("conditions", self.conditions)):
+            for root in roots:
+                for node in walk_condition(root):
+                    if node.id in origin:
+                        raise ValueError(
+                            f"duplicate condition id {node.id!r}: used in {origin[node.id]} "
+                            f"and again in {section}; ids must be unique because scores, "
+                            "chart columns and notifications are keyed by them"
+                        )
+                    origin[node.id] = section
+        return self
+
+    @model_validator(mode="after")
+    def _check_enabled_placement(self) -> "Strategy":
+        top_level = {id(c) for c in self.conditions}
+        for root in list(self.definitions) + list(self.conditions):
+            for node in walk_condition(root):
+                if id(node) in top_level:
+                    continue
+                if "enabled" in node.model_fields_set:
+                    raise ValueError(
+                        f"condition {node.id!r}: 'enabled' may only be set on top-level "
+                        "entries in conditions:, not on nested conditions or definitions"
+                    )
+        return self
 
 
 Strategy.model_rebuild()
@@ -285,6 +536,15 @@ class Historical(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     from_: str = Field(alias="from")
+    to: str = ""
+
+
+class Backtest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    download: bool = False
+    reuse_signals: bool = False
+    visualize: bool = False
 
 
 class Settings(BaseModel):
@@ -292,3 +552,4 @@ class Settings(BaseModel):
 
     display: Display
     historical: Historical
+    backtest: Backtest = Backtest()

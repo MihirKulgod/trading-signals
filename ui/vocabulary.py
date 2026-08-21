@@ -67,13 +67,19 @@ def all_timeframes(strategy_doc: Any) -> list[str]:
 
 def _flatten_timeframes(instr: Any) -> list[int]:
     out: list[int] = []
-    for mins in instr.get("timeframes", {}).values():
-        out.extend(int(m) for m in mins)
+    for entries in instr.get("timeframes", {}).values():
+        for entry in entries:
+            out.append(int(entry["minutes"]) if isinstance(entry, dict) else int(entry))
     return out
 
 
+# Raw candle columns present on every timeframe's dataframe regardless of the
+# ta: indicator list (pandas_ta's rename only touches columns it added).
+BASE_CANDLE_COLUMNS = ["open", "high", "low", "close", "time_of_day", "session_atr"]
+
+
 def alias_names(strategy_doc: Any) -> list[str]:
-    """All indicator column aliases (flattening MACD-style multi-output lists)."""
+    """All indicator aliases plus the raw OHLC candle columns."""
     out: list[str] = []
     for ind in strategy_doc.get("ta", []):
         alias = ind.get("alias")
@@ -81,7 +87,19 @@ def alias_names(strategy_doc: Any) -> list[str]:
         for n in names:
             if n is not None and str(n) not in out:
                 out.append(str(n))
+    for col in BASE_CANDLE_COLUMNS:
+        if col not in out:
+            out.append(col)
     return out
+
+
+def definition_ids(strategy_doc: Any) -> list[str]:
+    """Ids of the shared conditions under the top-level ``definitions`` list."""
+    return [
+        str(d.get("id"))
+        for d in (strategy_doc.get("definitions") or [])
+        if d.get("id") is not None
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +146,8 @@ def condition_arg_specs() -> dict[str, list[dict]]:
 
         return {
             name: [
-                {"name": a.name, "kind": a.kind, "min": a.min_children, "max": a.max_children}
+                {"name": a.name, "kind": a.kind, "min": a.min_children, "max": a.max_children,
+                 "options": list(a.options)}
                 for a in spec.args
             ]
             for name, spec in CONDITION_REGISTRY.items()

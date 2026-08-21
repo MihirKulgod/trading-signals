@@ -20,7 +20,7 @@ from nicegui import ui
 from pydantic import ValidationError
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
-from ui import persistence, vocabulary
+from ui import operations, persistence, vocabulary
 
 MUTED = "text-sm text-gray-500"
 
@@ -44,7 +44,10 @@ TAB_DOC = {
     "Settings · Historical": "settings",
     "Strategy · General": "strategy",
     "Strategy · Indicators": "strategy",
+    "Strategy · Definitions": "strategy",
     "Strategy · Conditions": "strategy",
+    "Run · Backtest": None,
+    "Run · Live": None,
 }
 
 
@@ -268,9 +271,40 @@ def _timeframes_editor(instr: CommentedMap) -> None:
     for tf_type in list(tfs.keys()):
         with ui.row().classes("items-center gap-2"):
             ui.input(label=f"{tf_type} (minutes, comma-sep)",
-                     value=",".join(str(x) for x in tfs[tf_type]),
-                     on_change=lambda e, t=tf_type: tfs.__setitem__(t, _parse_int_list(e.value))) \
+                     value=",".join(str(_tf_minutes(x)) for x in tfs[tf_type]),
+                     on_change=lambda e, t=tf_type: _set_timeframes(tfs, t, e.value)) \
                 .classes("min-w-[220px]").props("dense")
+        ui.label("Developing: read the partially formed candle at t rather than "
+                 "the last completed one.").classes(MUTED)
+        with ui.row().classes("items-center gap-4 flex-wrap"):
+            for idx, entry in enumerate(tfs[tf_type]):
+                ui.switch(f"{_tf_minutes(entry)}min",
+                          value=isinstance(entry, dict) and bool(entry.get("developing")),
+                          on_change=lambda e, t=tf_type, i=idx: _set_developing(tfs, t, i, e.value))
+
+
+def _tf_minutes(entry) -> int:
+    return int(entry["minutes"]) if isinstance(entry, dict) else int(entry)
+
+
+def _set_timeframes(tfs: CommentedMap, tf_type: str, raw: str) -> None:
+    """
+    Rewrite the minute list, keeping the developing flag of surviving entries.
+    Edits the sequence in place so a YAML anchor shared by several instruments
+    keeps pointing at it, matching how the developing switches behave.
+    """
+    seq = tfs[tf_type]
+    flagged = {_tf_minutes(e) for e in seq if isinstance(e, dict) and e.get("developing")}
+    seq[:] = [_new_timeframe(m) if m in flagged else m for m in _parse_int_list(raw)]
+
+
+def _set_developing(tfs: CommentedMap, tf_type: str, index: int, on: bool) -> None:
+    minutes = _tf_minutes(tfs[tf_type][index])
+    tfs[tf_type][index] = _new_timeframe(minutes) if on else minutes
+
+
+def _new_timeframe(minutes: int) -> CommentedMap:
+    return _new_map([("minutes", minutes), ("developing", True)])
 
 
 def _parse_int_list(s: str) -> list[int]:
@@ -404,6 +438,13 @@ def _is_combinator(cond_type: str | None) -> bool:
     return any(a["kind"] == "children" for a in _specs_for(cond_type))
 
 
+def _accepts_more_children(cond_type: str | None, count: int) -> bool:
+    for a in _specs_for(cond_type):
+        if a["kind"] == "children":
+            return a["max"] is None or count < a["max"]
+    return False
+
+
 def _type_signature(cond_type: str | None):
     """Identity of a type's arg shape; equal signatures can share existing args."""
     specs = _specs_for(cond_type)
@@ -440,6 +481,23 @@ def _default_reference_operand() -> CommentedMap:
     ])
 
 
+def _default_candle_operand() -> CommentedMap:
+    s = DOCS["strategy"]
+    ids = vocabulary.instrument_ids(s)
+    tts = vocabulary.timeframe_types(s)
+    tfs = vocabulary.all_timeframes(s)
+    return _new_map([
+        ("type", "reference"),
+        ("instrument_id", ids[0] if ids else ""),
+        ("timeframe_type", tts[0] if tts else "intraday"),
+        ("timeframe", tfs[0] if tfs else "1min"),
+    ])
+
+
+def _default_condition_operand() -> CommentedMap:
+    return _new_map([("type", "condition"), ("input", _default_leaf_condition())])
+
+
 def _default_args_for_type(cond_type: str) -> Any:
     """Build a fresh ``args`` structure matching a condition type's arg specs."""
     specs = _specs_for(cond_type)
@@ -447,7 +505,9 @@ def _default_args_for_type(cond_type: str) -> Any:
         return CommentedSeq()
     m = CommentedMap()
     for a in specs:
-        if a["kind"] in ("operand", "reference"):
+        if a["kind"] == "candle_reference":
+            m[a["name"]] = _default_candle_operand()
+        elif a["kind"] in ("operand", "reference"):
             # Default operands to references (a value default of 0 would risk a
             # divide-by-zero normalizer); the user can switch to a literal value.
             m[a["name"]] = _default_reference_operand()
@@ -455,6 +515,14 @@ def _default_args_for_type(cond_type: str) -> Any:
             m[a["name"]] = 1
         elif a["kind"] == "float":
             m[a["name"]] = 1.0
+        elif a["kind"] == "bool":
+            m[a["name"]] = True
+        elif a["kind"] == "choice":
+            options = a.get("options") or []
+            m[a["name"]] = options[0] if options else ""
+        elif a["kind"] == "definition_id":
+            ids = vocabulary.definition_ids(DOCS["strategy"])
+            m[a["name"]] = ids[0] if ids else ""
         elif a["kind"] == "condition":
             m[a["name"]] = _default_leaf_condition()
     return m
@@ -476,14 +544,17 @@ def _reshape_condition(node: CommentedMap, new_type: str) -> None:
     if _type_signature(node.get("condition")) != _type_signature(new_type):
         node["args"] = _default_args_for_type(new_type)
     node["condition"] = new_type
-    _conditions_tab.refresh()
+    _refresh_editors()
 
 
 def _set_operand_type(parent: CommentedMap, key: str, new_type: str) -> None:
-    parent[key] = (
-        _default_value_operand() if new_type == "value" else _default_reference_operand()
-    )
-    _conditions_tab.refresh()
+    if new_type == "value":
+        parent[key] = _default_value_operand()
+    elif new_type == "condition":
+        parent[key] = _default_condition_operand()
+    else:
+        parent[key] = _default_reference_operand()
+    _refresh_editors()
 
 
 def _set_lookback(operand: CommentedMap, value: Any) -> None:
@@ -497,26 +568,39 @@ def _set_lookback(operand: CommentedMap, value: Any) -> None:
 
 def _add_child(node: CommentedMap) -> None:
     node.setdefault("args", CommentedSeq()).append(_default_leaf_condition())
-    _conditions_tab.refresh()
+    _refresh_editors()
 
 
 def _add_top_condition(conditions: CommentedSeq) -> None:
     conditions.append(_default_leaf_condition())
-    _conditions_tab.refresh()
+    _refresh_editors()
 
 
 def _remove_condition(parent_list: CommentedSeq, index: int) -> None:
     del parent_list[index]
-    _conditions_tab.refresh()
+    _refresh_editors()
 
 
 # --- clipboard: copy / cut / paste any condition subtree -------------------
 
 
+def _run_condition(node: CommentedMap) -> None:
+    """Backtest a single block using the editor's current (unsaved) strategy."""
+    node_id = node.get("id")
+    try:
+        persistence.validate_strategy(DOCS["strategy"])
+    except ValidationError as error:
+        first = str(error).splitlines()[1] if "\n" in str(error) else str(error)
+        ui.notify(f"Fix the strategy before running: {first}", type="negative", timeout=6000)
+        return
+    operations.run_single_condition(DOCS["strategy"], node_id)
+    ui.notify(f"Backtesting {node_id} — see Run · Backtest for progress")
+
+
 def _copy_condition(node: CommentedMap) -> None:
     STATE["clipboard"] = copy.deepcopy(node)
     ui.notify("Condition copied")
-    _conditions_tab.refresh()
+    _refresh_editors()
 
 
 def _cut_condition(node: CommentedMap, on_remove) -> None:
@@ -528,14 +612,14 @@ def _paste_append(lst: CommentedSeq) -> None:
     node = copy.deepcopy(STATE["clipboard"])
     node["id"] = _new_id()  # avoid duplicate top-level ids (they name score columns)
     lst.append(node)
-    _conditions_tab.refresh()
+    _refresh_editors()
 
 
 def _paste_replace(args: CommentedMap, key: str) -> None:
     node = copy.deepcopy(STATE["clipboard"])
     node["id"] = _new_id()
     args[key] = node
-    _conditions_tab.refresh()
+    _refresh_editors()
 
 
 def _paste_button(on_paste, tooltip: str):
@@ -552,30 +636,68 @@ def _toggle_collapsed(node: CommentedMap) -> None:
     coll = STATE.setdefault("collapsed", set())
     key = id(node)
     coll.discard(key) if key in coll else coll.add(key)
-    _conditions_tab.refresh()
+    _refresh_editors()
+
+
+def _walk_condition_nodes(node: Any):
+    """Yield every condition node in a raw document, at any nesting depth."""
+    if isinstance(node, dict):
+        if "condition" in node and "id" in node:
+            yield node
+        for value in node.values():
+            yield from _walk_condition_nodes(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _walk_condition_nodes(item)
+
+
+def _collapse_all() -> None:
+    strategy = DOCS.get("strategy") or {}
+    STATE["collapsed"] = {
+        id(node)
+        for key in ("definitions", "conditions")
+        for root in (strategy.get(key) or [])
+        for node in _walk_condition_nodes(root)
+    }
 
 
 # Render simple scalar fields (numbers) first, larger nested fields last.
-_KIND_ORDER = {"int": 0, "float": 0, "operand": 1, "reference": 1, "condition": 2}
+_KIND_ORDER = {"int": 0, "float": 0, "bool": 0, "choice": 0, "definition_id": 0,
+               "operand": 1, "reference": 1, "candle_reference": 1, "condition": 2}
+
+
+# Definitions and Conditions share the same editor helpers, so a structural
+# change in either must re-render both tabs.
+def _refresh_editors() -> None:
+    _definitions_tab.refresh()
+    _conditions_tab.refresh()
 
 
 # --- operand + condition editors -------------------------------------------
 
 
-def _operand_editor(parent: CommentedMap, key: str, label: str, *, force_reference=False) -> None:
+def _operand_editor(parent: CommentedMap, key: str, label: str, depth: int = 0, *,
+                    force_reference=False, hide_col_name=False) -> None:
     op = parent.get(key)
     if not isinstance(op, dict):
-        op = _default_reference_operand() if force_reference else _default_value_operand()
+        if hide_col_name:
+            op = _default_candle_operand()
+        elif force_reference:
+            op = _default_reference_operand()
+        else:
+            op = _default_value_operand()
         parent[key] = op
 
     s = DOCS["strategy"]
     with ui.card().classes("w-full bg-gray-50"):
         with ui.row().classes("items-center gap-2"):
             ui.label(label).classes("font-medium")
-            if force_reference:
+            if hide_col_name:
+                ui.badge("candle").props("color=teal")
+            elif force_reference:
                 ui.badge("reference").props("color=teal")
             else:
-                ui.select(["value", "reference"], value=op.get("type"), label="type",
+                ui.select(["value", "reference", "condition"], value=op.get("type"), label="type",
                           on_change=lambda e, p=parent, k=key: _set_operand_type(p, k, e.value)) \
                     .props("dense").classes("min-w-[130px]")
 
@@ -584,14 +706,17 @@ def _operand_editor(parent: CommentedMap, key: str, label: str, *, force_referen
                       on_change=lambda e, o=op: o.__setitem__(
                           "value", float(e.value) if e.value is not None else None)) \
                 .props("dense").classes("min-w-[140px]")
+        elif op.get("type") == "condition":
+            _nested_condition_editor(op, "input", depth)
         else:
             with ui.row().classes("items-center gap-2 flex-wrap"):
                 _select("instrument_id", vocabulary.instrument_ids(s), op, "instrument_id").props("dense")
                 _select("timeframe_type", vocabulary.timeframe_types(s), op, "timeframe_type",
                         with_input=True).props("dense")
                 _select("timeframe", vocabulary.all_timeframes(s), op, "timeframe").props("dense")
-                _select("col_name", vocabulary.alias_names(s), op, "col_name",
-                        with_input=True).props("dense")
+                if not hide_col_name:
+                    _select("col_name", vocabulary.alias_names(s), op, "col_name",
+                            with_input=True).props("dense")
                 ui.number(label="lookback", value=op.get("lookback", 0), precision=0, format="%d",
                           on_change=lambda e, o=op: _set_lookback(o, e.value)) \
                     .props("dense").classes("min-w-[110px]")
@@ -611,6 +736,19 @@ def _float_field(args: CommentedMap, name: str) -> None:
         .props("dense").classes("min-w-[110px]")
 
 
+def _bool_field(args: CommentedMap, name: str) -> None:
+    ui.switch(name, value=bool(args.get(name, True)),
+              on_change=lambda e, a=args, n=name: a.__setitem__(n, bool(e.value)))
+
+
+def _choice_field(args: CommentedMap, name: str, options) -> None:
+    _select(name, options or [], args, name).props("dense")
+
+
+def _definition_id_field(args: CommentedMap, name: str) -> None:
+    _select(name, vocabulary.definition_ids(DOCS["strategy"]), args, name).props("dense")
+
+
 def _nested_condition_editor(args: CommentedMap, key: str, depth: int) -> None:
     child = args.get(key)
     if not isinstance(child, dict):
@@ -623,7 +761,37 @@ def _nested_condition_editor(args: CommentedMap, key: str, depth: int) -> None:
         _condition_editor(child, depth + 1)  # required slot -> no remove button
 
 
-def _condition_editor(node: CommentedMap, depth: int, on_remove=None) -> None:
+def _move_in_list(lst: CommentedSeq, old_index: int, new_index: int) -> None:
+    if old_index == new_index or not (0 <= old_index < len(lst)):
+        return
+    lst.insert(new_index, lst.pop(old_index))
+    _refresh_editors()
+
+
+# Handles are scoped by item depth so a nested list's handles never match its
+# parent container's selector, which would make both sortables fire at once.
+def _handle_class(depth: int) -> str:
+    return f"drag-handle-d{depth}"
+
+
+def _sortable_column(lst: CommentedSeq, depth: int):
+    container = ui.column().classes("w-full gap-2")
+    container.make_sortable(
+        handle=f".{_handle_class(depth)}",
+        on_end=lambda e, target=lst: _move_in_list(target, e.old_index, e.new_index),
+    )
+    return container
+
+
+def _set_enabled(node: CommentedMap, value: bool) -> None:
+    if value:
+        node.pop("enabled", None)
+    else:
+        node["enabled"] = False
+
+
+def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabled=False,
+                      draggable=False) -> None:
     cond_type = node.get("condition")
     is_combinator = _is_combinator(cond_type)
     type_opts = _with_current(vocabulary.condition_types(), cond_type)
@@ -631,19 +799,29 @@ def _condition_editor(node: CommentedMap, depth: int, on_remove=None) -> None:
 
     with ui.card().classes("w-full").style(f"margin-left:{depth * 16}px"):
         with ui.row().classes("items-center gap-2 w-full"):
+            if draggable:
+                ui.icon("drag_indicator") \
+                    .classes(f"{_handle_class(depth)} cursor-move text-gray-400") \
+                    .tooltip("Drag to reorder")
             ui.button(icon="chevron_right" if collapsed else "expand_more",
                       on_click=lambda n=node: _toggle_collapsed(n)) \
                 .props("flat dense").tooltip("Expand" if collapsed else "Collapse")
+            if show_enabled:
+                ui.switch(value=node.get("enabled", True),
+                          on_change=lambda e, n=node: _set_enabled(n, e.value)) \
+                    .props("dense").tooltip("Evaluate this condition in backtests and live runs")
             ui.select(type_opts, value=cond_type, label="type",
                       on_change=lambda e, n=node: _reshape_condition(n, e.value)) \
                 .props("dense").classes("min-w-[150px]")
             _text("id", node, "id").props("dense")
             ui.space()
-            if is_combinator:
+            if is_combinator and _accepts_more_children(cond_type, len(node.get("args") or [])):
                 ui.button(icon="add", on_click=lambda n=node: _add_child(n)) \
                     .props("flat dense").tooltip("Add child")
                 _paste_button(lambda n=node: _paste_append(n.setdefault("args", CommentedSeq())),
                               "Paste as child")
+            ui.button(icon="play_arrow", on_click=lambda n=node: _run_condition(n)) \
+                .props("flat dense").tooltip("Backtest this block on its own")
             ui.button(icon="content_copy", on_click=lambda n=node: _copy_condition(n)) \
                 .props("flat dense").tooltip("Copy")
             if on_remove is not None:
@@ -660,21 +838,48 @@ def _condition_editor(node: CommentedMap, depth: int, on_remove=None) -> None:
             children = node.setdefault("args", CommentedSeq())
             if len(children) == 0:
                 ui.label("(no children yet — add at least one)").classes(MUTED)
-            for c_idx, child in enumerate(children):
-                _condition_editor(child, depth + 1,
-                                  on_remove=lambda cl=children, ci=c_idx: _remove_condition(cl, ci))
+            with _sortable_column(children, depth + 1):
+                for c_idx, child in enumerate(children):
+                    _condition_editor(child, depth + 1, draggable=True,
+                                      on_remove=lambda cl=children, ci=c_idx: _remove_condition(cl, ci))
         else:
             args = node.setdefault("args", CommentedMap())
             for a in sorted(_specs_for(cond_type), key=lambda a: _KIND_ORDER.get(a["kind"], 1)):
-                if a["kind"] in ("operand", "reference"):
-                    _operand_editor(args, a["name"], a["name"],
+                if a["kind"] == "candle_reference":
+                    _operand_editor(args, a["name"], a["name"], depth,
+                                    force_reference=True, hide_col_name=True)
+                elif a["kind"] in ("operand", "reference"):
+                    _operand_editor(args, a["name"], a["name"], depth,
                                     force_reference=(a["kind"] == "reference"))
                 elif a["kind"] == "int":
                     _int_field(args, a["name"])
                 elif a["kind"] == "float":
                     _float_field(args, a["name"])
+                elif a["kind"] == "bool":
+                    _bool_field(args, a["name"])
+                elif a["kind"] == "choice":
+                    _choice_field(args, a["name"], a.get("options"))
+                elif a["kind"] == "definition_id":
+                    _definition_id_field(args, a["name"])
                 elif a["kind"] == "condition":
                     _nested_condition_editor(args, a["name"], depth)
+
+
+@ui.refreshable
+def _definitions_tab() -> None:
+    definitions = DOCS["strategy"].setdefault("definitions", CommentedSeq())
+    with ui.row().classes("items-center gap-2"):
+        ui.label("Definitions").classes("font-medium")
+        ui.button(icon="add", on_click=lambda: _add_top_condition(definitions)) \
+            .props("flat dense").tooltip("Add definition")
+        _paste_button(lambda: _paste_append(definitions), "Paste definition")
+    ui.label("Shared conditions, referenced from elsewhere via the 'ref' type.").classes(MUTED)
+    if len(definitions) == 0:
+        ui.label("No definitions yet.").classes(MUTED)
+    with _sortable_column(definitions, 0):
+        for idx, definition in enumerate(definitions):
+            _condition_editor(definition, depth=0, draggable=True,
+                              on_remove=lambda dl=definitions, i=idx: _remove_condition(dl, i))
 
 
 @ui.refreshable
@@ -687,9 +892,10 @@ def _conditions_tab() -> None:
         _paste_button(lambda: _paste_append(conditions), "Paste condition")
     if len(conditions) == 0:
         ui.label("No conditions defined.").classes(MUTED)
-    for idx, cond in enumerate(conditions):
-        _condition_editor(cond, depth=0,
-                          on_remove=lambda cl=conditions, i=idx: _remove_condition(cl, i))
+    with _sortable_column(conditions, 0):
+        for idx, cond in enumerate(conditions):
+            _condition_editor(cond, depth=0, show_enabled=True, draggable=True,
+                              on_remove=lambda cl=conditions, i=idx: _remove_condition(cl, i))
 
 
 # ---------------------------------------------------------------------------
@@ -702,13 +908,19 @@ _TAB_BUILDERS: dict[str, Any] = {
     "Settings · Historical": _historical_tab,
     "Strategy · General": _general_tab,
     "Strategy · Indicators": _indicators_tab,
+    "Strategy · Definitions": _definitions_tab,
     "Strategy · Conditions": _conditions_tab,
+    "Run · Backtest": operations.backtest_tab,
+    "Run · Live": operations.live_tab,
 }
 
 
 def _commit(tab_label: str) -> bool:
     """Validate and save the document backing ``tab_label``. Returns success."""
-    doc_key = TAB_DOC[tab_label]
+    doc_key = TAB_DOC.get(tab_label)
+    if doc_key is None:
+        return True  # Run tabs edit no document
+
     doc = DOCS[doc_key]
     try:
         VALIDATORS[doc_key](doc)
@@ -734,6 +946,7 @@ def _banners() -> None:
 @ui.page("/")
 def index() -> None:
     _load_docs()
+    _collapse_all()
     STATE["current"] = "Settings · Display"
     STATE["reverting"] = False
 
@@ -770,6 +983,8 @@ def index() -> None:
         for label, builder in _TAB_BUILDERS.items():
             with ui.tab_panel(label):
                 builder()
+
+    ui.timer(1.0, operations.refresh_operations)
 
 
 def main() -> None:

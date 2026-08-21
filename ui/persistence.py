@@ -28,10 +28,11 @@ from ui import schema
 
 # Default locations, anchored to the project root (parent of the ``ui`` package)
 # so the config resolves regardless of the process's current working directory.
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_DIR = PROJECT_ROOT / "config"
-STRATEGY_PATH = CONFIG_DIR / "strategy.yaml"
-SETTINGS_PATH = CONFIG_DIR / "settings.yaml"
+import app_paths
+
+CONFIG_DIR = app_paths.config_dir()
+STRATEGY_PATH = app_paths.strategy_path()
+SETTINGS_PATH = app_paths.settings_path()
 
 
 def _yaml() -> YAML:
