@@ -170,6 +170,39 @@ def historical_csv_path(trading_symbol: str, token) -> str:
     import app_paths
     return str(app_paths.historical_dir() / f"{trading_symbol}-{token}.csv")
 
+class InsufficientHistoryError(Exception):
+    """The candles on disk do not span the range a run asked for."""
+
+# Absorbs weekends and public holidays, where an edge of the requested range
+# legitimately has no session.
+COVERAGE_TOLERANCE = timedelta(days=4)
+
+def check_coverage(candles, start_date: date, end_date: date, trading_symbol: str) -> None:
+    """
+    Stop a run whose cached candles miss part of the requested range.
+
+    Silently proceeding is worse than failing: the run would report a period it
+    never evaluated, and indicators would warm up from the wrong first bar.
+    """
+    if candles.empty:
+        raise InsufficientHistoryError(
+            f"{trading_symbol}: no cached candles at all, but {start_date}..{end_date} "
+            "was requested. Re-run with candle download enabled."
+        )
+
+    first, last = candles.index[0].date(), candles.index[-1].date()
+    missing = []
+    if first - start_date > COVERAGE_TOLERANCE:
+        missing.append(f"starts {(first - start_date).days} days late ({first})")
+    if end_date - last > COVERAGE_TOLERANCE:
+        missing.append(f"ends {(end_date - last).days} days early ({last})")
+    if missing:
+        raise InsufficientHistoryError(
+            f"{trading_symbol}: cached candles cover {first}..{last}, but "
+            f"{start_date}..{end_date} was requested — {'; '.join(missing)}. "
+            "Re-run with candle download enabled, or narrow the date range."
+        )
+
 def get_historical(kite: KiteConnect, instruments_info, start_date: date, end_date: date, start_time, stop_time, download_data=True, wipe_file=True):
     result = []
     if not download_data:
@@ -191,6 +224,9 @@ def get_historical(kite: KiteConnect, instruments_info, start_date: date, end_da
         outside_session = candles[~candles.index.isin(candles.between_time(start_time, stop_time).index)]
         print(f"{len(outside_session)} candles were found outside the specified range of {start_time}-{stop_time} [{instrument["trading_symbol"]}]")
         candles = candles.between_time(start_time, stop_time)
+
+        check_coverage(candles, start_date, end_date, instrument["trading_symbol"])
+        candles = candles[(candles.index.date >= start_date) & (candles.index.date <= end_date)]
 
         instrument.pop("token")
         instrument["candles"] = candles

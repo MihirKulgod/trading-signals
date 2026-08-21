@@ -64,14 +64,21 @@ def build_strategy(config):
     )
 
 def timeframe_entries(instrument) -> list[tuple[int, bool]]:
-    """(minutes, developing) per configured timeframe; a bare int means not developing."""
-    entries = []
-    for entry in instrument["timeframes"]["intraday"]:
-        if isinstance(entry, dict):
-            entries.append((int(entry["minutes"]), bool(entry.get("developing", False))))
-        else:
-            entries.append((int(entry), False))
-    return entries
+    """
+    (minutes, developing) per configured timeframe; a bare int means not developing.
+
+    Cached on the instrument because building replaces the configured list with
+    the frames it produced, and the live engine rebuilds every cycle.
+    """
+    if "timeframe_spec" not in instrument:
+        entries = []
+        for entry in instrument["timeframes"]["intraday"]:
+            if isinstance(entry, dict):
+                entries.append((int(entry["minutes"]), bool(entry.get("developing", False))))
+            else:
+                entries.append((int(entry), False))
+        instrument["timeframe_spec"] = entries
+    return instrument["timeframe_spec"]
 
 def bucket_labels(candles_1m_days, minutes: int) -> pd.Series:
     """
