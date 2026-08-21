@@ -6,26 +6,37 @@ import pandas as pd
 import condition
 
 
-def try_addplot(col_name, df, addplots, panel_no, ylabel=None, color="pink", type="line") -> bool:
+def try_addplot(col_name, df, addplots, panel_no, ylabel=None, color="pink", type="line", label=None) -> bool:
     if not col_name in df.columns:
         raise condition.ColumnNotFoundError(col_name, df)
-    
+
     col = df[col_name]
     if col.isna().all():
         return False
-    
+
+    kwargs = dict(panel=panel_no, color=color, type=type, secondary_y=False, width=0.85)
     if ylabel:
-        addplots.append(mpf.make_addplot(col, panel=panel_no, ylabel=ylabel, color=color, type=type, secondary_y = False, width=0.85))
-    else:
-        addplots.append(mpf.make_addplot(col, panel=panel_no, color=color, type=type, secondary_y = False, width=0.85))
+        kwargs["ylabel"] = ylabel
+    if label:
+        kwargs["label"] = label
+    addplots.append(mpf.make_addplot(col, **kwargs))
     return True
 
-def examine_condition(examination_window: int, condition_id: str, timestamp: pd.Timestamp, df: pd.DataFrame, display_panels: list[dict], signal_aggregates):
+# Colors auto-assigned to a composite condition's children, in order; cycles if
+# there are more children than colors.
+CHILD_COLORS = [
+    "tab:blue", "tab:orange", "tab:green", "tab:red",
+    "tab:purple", "tab:brown", "tab:pink", "tab:olive",
+]
+
+def examine_condition(examination_window: int, condition_id: str, timestamp: pd.Timestamp, df: pd.DataFrame, display_panels: list[dict], signal_aggregates, children: list[str] = None):
     output_path = f"output/{condition_id}/{timestamp.date()}/{timestamp.time().strftime('%H:%M')}.png"
 
-    pos = df.index.get_indexer([timestamp], method="bfill")[0]
+    # ffill: the display bar containing the timestamp. bfill would pick the next
+    # bar instead, running past the session end into the following day.
+    pos = df.index.get_indexer([timestamp], method="ffill")[0]
     if pos == -1:
-        print(f"Couldn't find a suitable timestamp to plot {condition_id} onset at {timestamp}!")
+        print(f"\nCouldn't find a suitable timestamp to plot {condition_id} at {timestamp}!")
         return
 
     window = df.iloc[max(0, pos - (examination_window - 1)):pos + 1]
@@ -45,6 +56,16 @@ def examine_condition(examination_window: int, condition_id: str, timestamp: pd.
             hadSuccess = hadSuccess or added
         if hadSuccess:
             i += 1
+
+    if children:
+        # Draw children on the same panel as the condition's own line below
+        # (shared panel i), so they overlay the parent signal rather than sitting
+        # in a separate panel.
+        representative_agg = signal_aggregates[0]
+        for idx, child_id in enumerate(children):
+            col = f"{child_id}_{representative_agg}"
+            color = CHILD_COLORS[idx % len(CHILD_COLORS)]
+            try_addplot(col, window, addplots, i, None, color, label=child_id)
 
     for agg in signal_aggregates:
         col = f"{condition_id}_{agg}"

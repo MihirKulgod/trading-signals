@@ -27,10 +27,25 @@ class Condition(ABC):
         raise NotImplementedError
 
     def __call__(self, ctx: "MarketContext") -> float:
-        return self.evaluate(ctx)
+        key = (id(self), ctx.time_offset)
+        if key not in ctx.memo:
+            ctx.memo[key] = self.evaluate(ctx)
+        result = ctx.memo[key]
+        ctx.trace[self.id] = result
+        return result
 
     def is_fulfilled(self, ctx: "MarketContext", threshold: float = 0.0) -> bool:
         return self.evaluate(ctx) >= threshold
+
+    def sub_conditions(self) -> list["Condition"]:
+        """Direct child Conditions wrapped by this one (empty for leaf conditions)."""
+        return []
+
+    def walk(self):
+        """Yields this condition and every nested condition, depth-first."""
+        yield self
+        for child in self.sub_conditions():
+            yield from child.walk()
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}()"
@@ -39,6 +54,31 @@ class InstrumentNotFoundError(KeyError):
     def __init__(self, instrument_id):
         super().__init__(f"instrument_id {instrument_id!r} not found in instruments_data")
         self.instrument_id = instrument_id
+
+_warned_references: dict = {}
+
+def reset_reference_warnings():
+    _warned_references.clear()
+
+def reference_warnings() -> list:
+    return sorted((key, timestamp) for key, timestamp in _warned_references.items())
+
+def warn_bad_reference(reason: str, data_src: dict, timestamp):
+    key = (reason, data_src["instrument_id"], data_src["timeframe"], data_src["col_name"])
+    if key in _warned_references:
+        return
+    _warned_references[key] = timestamp
+    print(f"[warning] {reason}: {key[1]}/{key[2]}/{key[3]} (first seen at {timestamp})")
+
+class DefinitionNotFoundError(KeyError):
+    def __init__(self, definition_id):
+        super().__init__(f"definition {definition_id!r} not found in definitions")
+        self.definition_id = definition_id
+
+class CircularDefinitionError(ValueError):
+    def __init__(self, definition_id):
+        super().__init__(f"definition {definition_id!r} references itself")
+        self.definition_id = definition_id
 
 class ColumnNotFoundError(KeyError):
     def __init__(self, column: str, dataframe: pd.DataFrame):
@@ -53,6 +93,9 @@ class ColumnNotFoundError(KeyError):
 class MarketContext:
     def __init__(self, instruments_data: list[dict], current_time: pd.Timestamp):
         self.instruments_data, self.current_time = instruments_data, current_time
+        self.trace: dict[str, float] = {}
+        self.memo: dict[tuple, float] = {}
+        self.time_offset = 0
 
     def get(self, data_src: dict):
         match data_src["type"]:
@@ -63,27 +106,49 @@ class MarketContext:
                 timeframe_type = data_src["timeframe_type"]
                 timeframe = data_src["timeframe"]
                 col_name = data_src["col_name"]
-                lookback = data_src.get("lookback", 0)
+                lookback = data_src.get("lookback", 0) + self.time_offset
 
                 _MISSING = object()
 
-                df : pd.DataFrame = next(
-                    (instrument["timeframes"][timeframe_type][timeframe]
-                    for instrument in self.instruments_data if instrument["id"] == instrument_id),
+                instrument = next(
+                    (i for i in self.instruments_data if i["id"] == instrument_id),
                     _MISSING
                 )
 
-                if df is _MISSING:
+                if instrument is _MISSING:
                     raise InstrumentNotFoundError(instrument_id)
 
-                # Gets the closest candle in the given timeframe before current time
-                pos = df.index.get_indexer([self.current_time], method="ffill")[0] - lookback
+                developing = instrument.get("developing", {}).get(timeframe_type, {})
+                is_developing = timeframe in developing
+
+                if lookback == 0 and is_developing:
+                    # The bucket-to-date candle: everything known at current_time.
+                    df = developing[timeframe]
+                    pos = df.index.get_indexer([self.current_time], method="ffill")[0]
+                else:
+                    df = instrument["timeframes"][timeframe_type][timeframe]
+                    pos = df.index.get_indexer([self.current_time], method="ffill")[0] - lookback
+                    # The bucket holding current_time is still forming, so the last
+                    # closed one sits before it. A developing timeframe spends
+                    # lookback 0 on the partial candle, making t-1 that bucket.
+                    if not is_developing:
+                        pos -= 1
 
                 if col_name not in df.columns:
                     # Common with wide indicators on the start of a historical data chunk
+                    warn_bad_reference("column missing", data_src, self.current_time)
                     return sys.float_info.epsilon
-                
-                return df[col_name].iloc[pos]
+
+                if pos < 0:
+                    # Before any usable candle; iloc would otherwise wrap around and
+                    # read from the far end of the frame.
+                    warn_bad_reference("before first candle", data_src, self.current_time)
+                    return math.nan
+
+                value = df[col_name].iloc[pos]
+                if pd.isna(value):
+                    warn_bad_reference("value is NaN", data_src, self.current_time)
+                return value
             case _:
                 raise ValueError(f"Invalid data source type: {data_src["type"]}")
     
@@ -95,24 +160,55 @@ class MarketContext:
             result.insert(0, self.get(data_src))
         return result
 
+def resolve_operand(ctx: MarketContext, operand):
+    if isinstance(operand, Condition):
+        return operand(ctx)
+    return ctx.get(operand)
+
+def has_nan(values) -> bool:
+    return any(math.isnan(value) for value in values)
+
 class And(Condition):
     def __init__(self, id, *children):
         super().__init__(id)
         self.children : list[Condition] = children
-    def evaluate(self, ctx): return min(c(ctx) for c in self.children)
+    def evaluate(self, ctx):
+        scores = [c(ctx) for c in self.children]
+        return math.nan if has_nan(scores) else min(scores)
+    def sub_conditions(self): return list(self.children)
 
 class Or(Condition):
     def __init__(self, id, *children):
         super().__init__(id)
         self.children : list[Condition] = children
-    def evaluate(self, ctx): return max(c(ctx) for c in self.children)
+    def evaluate(self, ctx):
+        scores = [c(ctx) for c in self.children]
+        return math.nan if has_nan(scores) else max(scores)
+    def sub_conditions(self): return list(self.children)
+
+class Sequential(Condition):
+    def __init__(self, id, *children):
+        super().__init__(id)
+        self.children : list[Condition] = children
+
+    def evaluate(self, ctx):
+        scores = []
+        for child in self.children:
+            score = child(ctx)
+            scores.append(score)
+            if not (score >= 0):
+                return score
+        return min(scores)
+
+    def sub_conditions(self): return list(self.children)
 
 class Not(Condition):
     def __init__(self, id, condition: Condition):
         super().__init__(id)
         self.condition : Condition = condition
-    
+
     def evaluate(self, ctx): return -1 * (self.condition(ctx))
+    def sub_conditions(self): return [self.condition]
 
 class NormalizedSpread(Condition):
     def __init__(self, id, a, b, normalizer):
@@ -120,7 +216,10 @@ class NormalizedSpread(Condition):
         self.a, self.b, self.normalizer = a, b, normalizer
 
     def evaluate(self, ctx: MarketContext) -> float:
-        return (ctx.get(self.a) - ctx.get(self.b)) / ctx.get(self.normalizer)
+        return (resolve_operand(ctx, self.a) - resolve_operand(ctx, self.b)) / resolve_operand(ctx, self.normalizer)
+
+    def sub_conditions(self):
+        return [op for op in (self.a, self.b, self.normalizer) if isinstance(op, Condition)]
 
 # Aliases
 Above = NormalizedSpread
@@ -141,6 +240,51 @@ class Decreasing(Not):
     def __init__(self, id, col: dict, normalizer, lookback):
         super().__init__(id, Increasing(f"{id}_inner", col, normalizer, lookback))
 
+class Compare(Condition):
+    def __init__(self, id, a, b, c, x, direction, normalizer):
+        super().__init__(id)
+        self.a, self.b, self.c, self.x = a, b, c, x
+        self.direction = direction
+        self.normalizer = normalizer
+
+    def evaluate(self, ctx: MarketContext) -> float:
+        a = resolve_operand(ctx, self.a)
+        threshold = resolve_operand(ctx, self.b) + resolve_operand(ctx, self.c) * self.x
+        margin = (threshold - a) if self.direction == "<" else (a - threshold)
+        return margin / resolve_operand(ctx, self.normalizer)
+
+    def sub_conditions(self):
+        return [op for op in (self.a, self.b, self.c, self.normalizer)
+                if isinstance(op, Condition)]
+
+class CandleWick(Condition):
+    def __init__(self, id, candle: dict, side, normalizer):
+        super().__init__(id)
+        self.candle, self.side, self.normalizer = candle, side, normalizer
+
+    def evaluate(self, ctx: MarketContext) -> float:
+        def col(name):
+            src = dict(self.candle)
+            src["col_name"] = name
+            return ctx.get(src)
+        open_, high, low, close = col("open"), col("high"), col("low"), col("close")
+        if self.side == "upper":
+            wick = high - max(open_, close)
+        else:
+            wick = min(open_, close) - low
+        return wick / resolve_operand(ctx, self.normalizer)
+
+    def sub_conditions(self):
+        return [self.normalizer] if isinstance(self.normalizer, Condition) else []
+
+class CandleBody(NormalizedSpread):
+    def __init__(self, id, candle: dict, normalizer):
+        a = dict(candle)
+        a["col_name"] = "close"
+        b = dict(candle)
+        b["col_name"] = "open"
+        super().__init__(id, a, b, normalizer)
+
 class Kernel(Condition):
     def __init__(self, id, condition: Condition, center=0.0, width=1.0, peak=1.0, floor=0.0, sharpness=1.0):
         super().__init__(id)
@@ -154,6 +298,8 @@ class Kernel(Condition):
         plateau = self.floor / (1.0 + math.exp(-d / self.sharpness))
         return hump + plateau - (self.peak)
 
+    def sub_conditions(self): return [self.condition]
+
 class RecentCrossoverUpward(Condition):
     def __init__(self, id, a, b, window, default): # Window must be positive
         super().__init__(id)
@@ -166,6 +312,9 @@ class RecentCrossoverUpward(Condition):
         vals_b = ctx.get_window(self.b, window)
 
         vals = [(vals_a[i] - vals_b[i]) for i in range(window)]
+
+        if has_nan(vals):
+            return math.nan
 
         last_crossover : float = self.default # Default value if no crossovers are found in the window
         i = 1
@@ -187,6 +336,63 @@ class Multiply(Condition):
 
     def evaluate(self, ctx: MarketContext) -> float:
         return self.x * self.condition(ctx)
+
+    def sub_conditions(self): return [self.condition]
+
+class Boost(Condition):
+    def __init__(self, id, base: Condition, bonus: Condition, k=1.0):
+        super().__init__(id)
+        self.base = base
+        self.bonus = bonus
+        self.k = k
+
+    def evaluate(self, ctx: MarketContext) -> float:
+        b = self.base(ctx)
+        bonus = self.bonus(ctx)
+        if math.isnan(b) or math.isnan(bonus):
+            return math.nan
+        factor = 1.0 + self.k * max(0.0, bonus)
+        return b * factor if b > 0 else b / factor
+
+    def sub_conditions(self): return [self.base, self.bonus]
+
+class ExistsInWindow(Condition):
+    def __init__(self, id, condition: Condition, width, include_current):
+        super().__init__(id)
+        self.condition = condition
+        self.width = width
+        self.include_current = include_current
+
+    def evaluate(self, ctx: MarketContext) -> float:
+        start = 0 if self.include_current else 1
+        saved_offset = ctx.time_offset
+        scores = []
+        for offset in range(start + self.width - 1, start - 1, -1):
+            ctx.time_offset = saved_offset + offset
+            scores.append(self.condition(ctx))
+        ctx.time_offset = saved_offset
+        return math.nan if has_nan(scores) else max(scores)
+
+    def sub_conditions(self): return [self.condition]
+
+class ForAllInWindow(Condition):
+    def __init__(self, id, condition: Condition, width, include_current):
+        super().__init__(id)
+        self.condition = condition
+        self.width = width
+        self.include_current = include_current
+
+    def evaluate(self, ctx: MarketContext) -> float:
+        start = 0 if self.include_current else 1
+        saved_offset = ctx.time_offset
+        scores = []
+        for offset in range(start + self.width - 1, start - 1, -1):
+            ctx.time_offset = saved_offset + offset
+            scores.append(self.condition(ctx))
+        ctx.time_offset = saved_offset
+        return math.nan if has_nan(scores) else min(scores)
+
+    def sub_conditions(self): return [self.condition]
 
 # ---------------------------------------------------------------------------
 # Self-describing condition registry
@@ -212,6 +418,7 @@ class ArgSpec:
     kind: str
     min_children: int | None = None
     max_children: int | None = None
+    options: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -229,6 +436,8 @@ CONDITION_REGISTRY: dict[str, ConditionSpec] = {
     "and": ConditionSpec(And, (ArgSpec("args", "children", min_children=1),)),
     "or":  ConditionSpec(Or,  (ArgSpec("args", "children", min_children=1),)),
     "not": ConditionSpec(Not, (ArgSpec("args", "children", min_children=1, max_children=1),)),
+    # Ordered tiers: a child is only evaluated if every earlier one passed.
+    "sequential": ConditionSpec(Sequential, (ArgSpec("args", "children", min_children=1),)),
 
     # Spread family -- (a - b) / normalizer.
     "normalized_spread": ConditionSpec(NormalizedSpread, (
@@ -244,6 +453,19 @@ CONDITION_REGISTRY: dict[str, ConditionSpec] = {
     "decreasing": ConditionSpec(Decreasing, (
         ArgSpec("col", "reference"), ArgSpec("normalizer", "operand"), ArgSpec("lookback", "int"))),
 
+    # a  <or>  b + c * x
+    "compare": ConditionSpec(Compare, (
+        ArgSpec("x", "float"), ArgSpec("direction", "choice", options=("<", ">")),
+        ArgSpec("a", "operand"), ArgSpec("b", "operand"), ArgSpec("c", "operand"),
+        ArgSpec("normalizer", "operand"))),
+
+    "candle_body": ConditionSpec(CandleBody, (
+        ArgSpec("candle", "candle_reference"), ArgSpec("normalizer", "operand"))),
+
+    "candle_wick": ConditionSpec(CandleWick, (
+        ArgSpec("side", "choice", options=("upper", "lower")),
+        ArgSpec("candle", "candle_reference"), ArgSpec("normalizer", "operand"))),
+
     "kernel": ConditionSpec(Kernel, (
         ArgSpec("input", "condition"),
         ArgSpec("center", "float"), ArgSpec("width", "float"),
@@ -256,26 +478,140 @@ CONDITION_REGISTRY: dict[str, ConditionSpec] = {
 
     "multiply": ConditionSpec(Multiply, (
         ArgSpec("x", "float"), ArgSpec("input", "condition"))),
+
+    "boost": ConditionSpec(Boost, (
+        ArgSpec("k", "float"),
+        ArgSpec("base", "condition"), ArgSpec("bonus", "condition"))),
+
+    "exists_in_window": ConditionSpec(ExistsInWindow, (
+        ArgSpec("input", "condition"),
+        ArgSpec("width", "int"), ArgSpec("include_current", "bool"))),
+
+    "for_all_in_window": ConditionSpec(ForAllInWindow, (
+        ArgSpec("input", "condition"),
+        ArgSpec("width", "int"), ArgSpec("include_current", "bool"))),
+
+    "ref": ConditionSpec(None, (ArgSpec("target", "definition_id"),)),
 }
 
 
-def build_condition(spec: dict) -> Condition:
+class DefinitionResolver:
+    def __init__(self, specs: dict):
+        self.specs = specs
+        self.built: dict[str, Condition] = {}
+        self.building: set[str] = set()
+
+    def __contains__(self, name) -> bool:
+        return name in self.specs
+
+    def __getitem__(self, name) -> Condition:
+        if name in self.built:
+            return self.built[name]
+        if name in self.building:
+            raise CircularDefinitionError(name)
+        if name not in self.specs:
+            raise DefinitionNotFoundError(name)
+        self.building.add(name)
+        built = build_condition(self.specs[name], self)
+        self.building.discard(name)
+        self.built[name] = built
+        return built
+
+def build_definitions(config: dict) -> DefinitionResolver:
+    resolver = DefinitionResolver({d["id"]: d for d in config.get("definitions", []) or []})
+    for name in list(resolver.specs):
+        resolver[name]
+    return resolver
+
+def disabled_condition_ids(config: dict) -> list:
+    return [c["id"] for c in (config.get("conditions") or []) if not c.get("enabled", True)]
+
+def selected_condition_specs(config: dict, only: list = None) -> list:
+    specs = config.get("conditions") or []
+    if only:
+        by_id = {c["id"]: c for c in specs}
+        missing = [name for name in only if name not in by_id]
+        if missing:
+            raise ValueError(
+                f"unknown condition id(s) {missing}; available: {list(by_id)}"
+            )
+        return [by_id[name] for name in only]
+    return [c for c in specs if c.get("enabled", True)]
+
+def find_condition_spec(config: dict, node_id: str):
+    """The spec of any condition in the config, at any depth, or None."""
+    def search(node):
+        if isinstance(node, dict):
+            if node.get("id") == node_id and "condition" in node:
+                return node
+            for value in node.values():
+                found = search(value)
+                if found is not None:
+                    return found
+        elif isinstance(node, list):
+            for item in node:
+                found = search(item)
+                if found is not None:
+                    return found
+        return None
+
+    for section in ("conditions", "definitions"):
+        found = search(config.get(section) or [])
+        if found is not None:
+            return found
+    return None
+
+def build_selected_conditions(config: dict, only: list = None) -> list:
+    definitions = build_definitions(config)
+    built = [build_condition(c, definitions) for c in selected_condition_specs(config, only)]
+    return list({id(c): c for c in built}.values())
+
+def build_operand(operand, definitions: DefinitionResolver = None):
+    if isinstance(operand, dict) and operand.get("type") == "condition":
+        return build_condition(operand["input"], definitions)
+    return operand
+
+def build_condition(spec: dict, definitions: DefinitionResolver = None) -> Condition:
     id = spec["id"]
+    if spec["condition"] == "ref":
+        target = spec["args"]["target"]
+        if definitions is None or target not in definitions:
+            raise DefinitionNotFoundError(target)
+        return definitions[target]
     # Combinators recurse into their child list.
     if spec["condition"] == "and":
-        return And(id, *[build_condition(c) for c in spec["args"]])
+        return And(id, *[build_condition(c, definitions) for c in spec["args"]])
     if spec["condition"] == "or":
-        return Or(id, *[build_condition(c) for c in spec["args"]])
+        return Or(id, *[build_condition(c, definitions) for c in spec["args"]])
     if spec["condition"] == "not":
-        return Not(id, build_condition(spec["args"][0]))
+        return Not(id, build_condition(spec["args"][0], definitions))
+    if spec["condition"] == "sequential":
+        return Sequential(id, *[build_condition(c, definitions) for c in spec["args"]])
     if spec["condition"] == "kernel":
         args = dict(spec["args"])
-        child = build_condition(args.pop("input"))
+        child = build_condition(args.pop("input"), definitions)
         return Kernel(id, child, **args)
     if spec["condition"] == "multiply":
         args = dict(spec["args"])
-        child = build_condition(args.pop("input"))
+        child = build_condition(args.pop("input"), definitions)
         return Multiply(id, child, **args)
+    if spec["condition"] == "boost":
+        args = dict(spec["args"])
+        base = build_condition(args.pop("base"), definitions)
+        bonus = build_condition(args.pop("bonus"), definitions)
+        return Boost(id, base, bonus, **args)
+    if spec["condition"] == "exists_in_window":
+        args = dict(spec["args"])
+        child = build_condition(args.pop("input"), definitions)
+        return ExistsInWindow(id, child, **args)
+    if spec["condition"] == "for_all_in_window":
+        args = dict(spec["args"])
+        child = build_condition(args.pop("input"), definitions)
+        return ForAllInWindow(id, child, **args)
 
-    cls = CONDITION_REGISTRY[spec["condition"]].cls
-    return cls(id, **spec["args"])
+    registry_entry = CONDITION_REGISTRY[spec["condition"]]
+    args = dict(spec["args"])
+    for arg in registry_entry.args:
+        if arg.kind == "operand" and arg.name in args:
+            args[arg.name] = build_operand(args[arg.name], definitions)
+    return registry_entry.cls(id, **args)

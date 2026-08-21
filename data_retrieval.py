@@ -1,3 +1,4 @@
+import copy
 import csv
 import os
 import time
@@ -157,19 +158,25 @@ def parse_instruments(kite: KiteConnect, config):
                 "id": instrument["id"],
                 "trading_symbol": kite_instrument["tradingsymbol"],
                 "token": kite_instrument["instrument_token"],
-                "timeframes": instrument["timeframes"],
+                # Copied: generate_base replaces entries in place, and a YAML
+                # anchor can make two instruments share one timeframes list.
+                "timeframes": copy.deepcopy(instrument["timeframes"]),
             })
 
             print(f"Parsed Instrument Info = {result[-1]}")
     return result
 
-def get_historical(kite: KiteConnect, instruments_info, start_date: date, end_date: date, start_time, stop_time, download_data=True):
+def historical_csv_path(trading_symbol: str, token) -> str:
+    import app_paths
+    return str(app_paths.historical_dir() / f"{trading_symbol}-{token}.csv")
+
+def get_historical(kite: KiteConnect, instruments_info, start_date: date, end_date: date, start_time, stop_time, download_data=True, wipe_file=True):
     result = []
     if not download_data:
         print("Skipping data download..")
     for instrument in tqdm(instruments_info, desc="[Instrument data download]", disable=not download_data):
         token = instrument["token"]
-        output_path = f"data/historical/{instrument["trading_symbol"]}-{token}.csv"
+        output_path = historical_csv_path(instrument["trading_symbol"], token)
         if download_data:
             fetch_historical_candles(
                 kite,
@@ -178,7 +185,7 @@ def get_historical(kite: KiteConnect, instruments_info, start_date: date, end_da
                 end_date,
                 "minute",
                 output_path,
-                True,
+                wipe_file,
             )
         candles = read_candles(output_path)
         outside_session = candles[~candles.index.isin(candles.between_time(start_time, stop_time).index)]
