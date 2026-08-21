@@ -750,6 +750,113 @@ def _definition_id_field(args: CommentedMap, name: str) -> None:
     _select(name, vocabulary.definition_ids(DOCS["strategy"]), args, name).props("dense")
 
 
+# --- read-only preview of a ref's target -----------------------------------
+
+# Greyed and inert: a ref shows what it points at, but the definition is only
+# editable where it lives, under Strategy · Definitions.
+PREVIEW_CLASSES = "opacity-60 pointer-events-none select-none"
+PREVIEW_MAX_DEPTH = 12
+
+
+def _find_definition(target) -> CommentedMap | None:
+    for definition in DOCS["strategy"].get("definitions") or []:
+        if definition.get("id") == target:
+            return definition
+    return None
+
+
+def _operand_summary(op) -> str:
+    """One-line form of an operand, for the preview only."""
+    if not isinstance(op, dict):
+        return str(op)
+    if op.get("type") == "value":
+        return str(op.get("value"))
+    if op.get("type") == "reference":
+        text = f"{op.get('instrument_id')}/{op.get('timeframe')}/{op.get('col_name')}"
+        lookback = op.get("lookback") or 0
+        return f"{text} (t-{lookback})" if lookback else text
+    return ""  # condition operands render as a nested node instead
+
+
+def _node_detail(node) -> str:
+    """Scalar args and operand summaries, joined for a single preview line."""
+    cond_type = node.get("condition")
+    args = node.get("args") or {}
+    if _is_combinator(cond_type) or not isinstance(args, dict):
+        return ""
+    parts = []
+    for a in _specs_for(cond_type):
+        if a["kind"] in ("int", "float", "bool", "choice", "definition_id"):
+            if a["name"] in args:
+                parts.append(f"{a['name']}={args[a['name']]}")
+        elif a["kind"] in ("operand", "reference", "candle_reference"):
+            summary = _operand_summary(args.get(a["name"]))
+            if summary:
+                parts.append(f"{a['name']}: {summary}")
+    return " · ".join(parts)
+
+
+def _preview_rows(node, depth: int = 0, seen: frozenset = frozenset()) -> list[dict]:
+    """
+    Flatten a definition into rows for the read-only preview, following any refs
+    it owns. Kept free of UI calls so the traversal can be tested directly.
+    """
+    if not isinstance(node, dict) or depth > PREVIEW_MAX_DEPTH:
+        return []
+    cond_type = node.get("condition")
+    rows = [{"depth": depth, "type": str(cond_type), "id": str(node.get("id", "")),
+             "detail": _node_detail(node), "note": None}]
+    args = node.get("args")
+
+    if cond_type == "ref":
+        rows += _target_rows((args or {}).get("target"), depth + 1, seen)
+    elif _is_combinator(cond_type):
+        for child in args or []:
+            rows += _preview_rows(child, depth + 1, seen)
+    elif isinstance(args, dict):
+        for a in _specs_for(cond_type):
+            value = args.get(a["name"])
+            if a["kind"] == "condition":
+                rows += _preview_rows(value, depth + 1, seen)
+            elif a["kind"] in ("operand", "reference", "candle_reference") \
+                    and isinstance(value, dict) and value.get("type") == "condition":
+                rows += _preview_rows(value.get("input"), depth + 1, seen)
+    return rows
+
+
+def _target_rows(target, depth: int, seen: frozenset) -> list[dict]:
+    if target in seen:
+        return [{"depth": depth, "type": "ref", "id": str(target),
+                 "detail": "", "note": "cycle"}]
+    definition = _find_definition(target)
+    if definition is None:
+        return [{"depth": depth, "type": "ref", "id": str(target),
+                 "detail": "", "note": "missing"}]
+    return _preview_rows(definition, depth, seen | {target})
+
+
+def _ref_preview(node: CommentedMap) -> None:
+    target = (node.get("args") or {}).get("target")
+    if not target:
+        return
+    with ui.card().classes(f"w-full bg-gray-100 {PREVIEW_CLASSES}"):
+        ui.label(f"preview of '{target}' — edit under Strategy · Definitions") \
+            .classes("text-xs text-gray-500")
+        for row in _target_rows(target, 0, frozenset()):
+            with ui.row().classes("items-baseline gap-2 w-full") \
+                    .style(f"margin-left:{row['depth'] * 14}px"):
+                if row["note"] == "cycle":
+                    ui.label(f"↺ {row['id']} (shown above)").classes("text-xs text-warning")
+                    continue
+                if row["note"] == "missing":
+                    ui.label(f"⚠ {row['id']} is not in definitions").classes("text-xs text-negative")
+                    continue
+                ui.badge(row["type"]).props("color=grey")
+                ui.label(row["id"]).classes("text-sm")
+                if row["detail"]:
+                    ui.label(row["detail"]).classes("text-xs text-gray-500")
+
+
 def _nested_condition_editor(args: CommentedMap, key: str, depth: int) -> None:
     child = args.get(key)
     if not isinstance(child, dict):
@@ -864,6 +971,9 @@ def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabl
                     _definition_id_field(args, a["name"])
                 elif a["kind"] == "condition":
                     _nested_condition_editor(args, a["name"], depth)
+
+            if cond_type == "ref":
+                _ref_preview(node)
 
 
 @ui.refreshable
