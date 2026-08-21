@@ -94,13 +94,18 @@ def bucket_labels(candles_1m_days, minutes: int) -> pd.Series:
 
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 
-def build_developing_frame(candles_1m_days, minutes: int, strategy, completed, description=""):
+def build_developing_frame(candles_1m_days, minutes: int, strategy, completed,
+                           description="", latest_only=False):
     """
-    Indicators for the partially formed candle at every minute.
+    Indicators for the partially formed candle.
 
     Row t holds the strategy applied to (every completed bucket before t) plus a
-    bucket-to-date candle covering bucket_start..t, so a condition evaluated at t
-    sees exactly what a live feed would.
+    bucket-to-date candle covering bucket_start..t.
+
+    A backtest needs every minute, because it replays each one in turn. Live only
+    ever asks about the present, so ``latest_only`` builds the single current row
+    -- MarketContext reads this frame only at lookback 0, every other offset
+    coming from the completed frame.
     """
     ohlcv = completed[OHLCV_COLUMNS]
     candles = concat_days(candles_1m_days)
@@ -108,7 +113,7 @@ def build_developing_frame(candles_1m_days, minutes: int, strategy, completed, d
     if completed.index.equals(candles.index):
         # One base candle per bucket, so a bucket is complete the moment it
         # exists and the developing frame is the completed one.
-        return completed
+        return completed.iloc[[-1]] if latest_only else completed
 
     bucket = bucket_labels(candles_1m_days, minutes)
     grouped = candles.groupby(bucket)
@@ -121,8 +126,14 @@ def build_developing_frame(candles_1m_days, minutes: int, strategy, completed, d
     })
 
     positions = completed.index.get_indexer(bucket, method="ffill")
-    rows = []
-    for i, position in enumerate(tqdm(positions, desc=f"[Developing {description}]", leave=False)):
+    targets = [len(positions) - 1] if latest_only else range(len(positions))
+    if not latest_only:
+        targets = tqdm(targets, desc=f"[Developing {description}]", leave=False)
+
+    rows, index = [], []
+    for i in targets:
+        index.append(candles.index[i])
+        position = positions[i]
         if position < 1:
             # No completed bucket yet, so the frame would be the partial candle
             # alone. pandas_ta needs two rows and prints "[!] VWAP requires an
@@ -136,10 +147,17 @@ def build_developing_frame(candles_1m_days, minutes: int, strategy, completed, d
         frame.ta.study(strategy)
         add_derived_columns(frame)
         rows.append(frame.iloc[-1])
-    return pd.DataFrame(rows, index=candles.index)
+    return pd.DataFrame(rows, index=pd.DatetimeIndex(index))
 
-def build_timeframes(config, instruments_data, candles_for, progress_label="Processing"):
-    """Builds the completed frame per timeframe, plus a developing frame where configured."""
+def build_timeframes(config, instruments_data, candles_for, progress_label="Processing",
+                     developing_history=True):
+    """
+    Builds the completed frame per timeframe, plus a developing frame where configured.
+
+    ``developing_history`` reconstructs the developing candle for every past
+    minute, which only a backtest needs -- it exists to replay what live would
+    have seen. Live itself asks about the present, so it builds one row.
+    """
     SavedStrategy = build_strategy(config)
     tasks = [(i, tf) for i in instruments_data for tf in timeframe_entries(i)]
 
@@ -160,7 +178,8 @@ def build_timeframes(config, instruments_data, candles_for, progress_label="Proc
                 if is_developing:
                     developing[tf] = build_developing_frame(
                         candles_1m_days, minutes, SavedStrategy, df,
-                        f"{instrument['trading_symbol']}/{tf}")
+                        f"{instrument['trading_symbol']}/{tf}",
+                        latest_only=not developing_history)
 
                 pbar.update(1)
 
@@ -173,11 +192,12 @@ def generate_base(config, instruments_data):
                      lambda instrument: bracket_by_day(instrument["candles"]))
 
 def generate_base_window(config, instruments_data, window_days: int):
+    """Rebuilds the live frames; the developing candle is only needed for now."""
     def windowed(instrument):
         days = bracket_by_day(instrument["candles"])
         return dict(sorted(days.items())[-window_days:])
 
-    build_timeframes(config, instruments_data, windowed)
+    build_timeframes(config, instruments_data, windowed, developing_history=False)
 
 def generate_signals(config, instruments_data, only=None, progress=None):
     # Retrieve the Timestamp indices for signal generation
