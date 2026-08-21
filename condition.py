@@ -369,13 +369,28 @@ class Boost(Condition):
 
     def sub_conditions(self): return [self.base, self.bonus]
 
+class SessionMinute(Condition):
+    """
+    Minutes since midnight at the instant being evaluated.
+
+    Read from the clock, not from a candle: at a session's first bars nothing has
+    closed yet, so a ``time_of_day`` column would fall back to the previous day's
+    last candle and report the afternoon.
+    """
+
+    def evaluate(self, ctx: MarketContext) -> float:
+        return ctx.current_time.hour * 60 + ctx.current_time.minute
+
 class WindowQuantifier(Condition):
     """
     Evaluates a child across the last ``width`` closed candles.
 
-    Offsets start at 1, never 0: every timeframe exposes its forming candle at
-    lookback 0, and "did this happen in the last X candles" must not answer yes
-    on a momentary move inside the candle still being built.
+    Offsets run 0..width-1, and a reference resolves offset 0 to the most recent
+    closed candle, so the newest candle in the window is one the market has
+    finished. Excluding a forming candle is a property of the timeframe (see
+    ``developing``), not of the window -- were a timeframe ever marked
+    developing, offset 0 would become its forming candle and this would need to
+    start at 1 instead.
 
     With ``same_day`` an offset that reaches an earlier session is dropped, so a
     block cannot fire at the open on the back of yesterday's candles.
@@ -390,7 +405,7 @@ class WindowQuantifier(Condition):
     def scores(self, ctx: MarketContext) -> list:
         saved_offset = ctx.time_offset
         found = []
-        for offset in range(self.width, 0, -1):
+        for offset in range(self.width - 1, -1, -1):
             ctx.time_offset = saved_offset + offset
             ctx.crossed_day = False
             score = self.condition(ctx)
@@ -512,6 +527,9 @@ CONDITION_REGISTRY: dict[str, ConditionSpec] = {
         ArgSpec("input", "condition"), ArgSpec("width", "int"),
         ArgSpec("same_day", "bool"))),
 
+    # Clock, not candle data -- takes no arguments.
+    "session_minute": ConditionSpec(SessionMinute, ()),
+
     "ref": ConditionSpec(None, (ArgSpec("target", "definition_id"),)),
 }
 
@@ -631,7 +649,7 @@ def build_condition(spec: dict, definitions: DefinitionResolver = None) -> Condi
         return ForAllInWindow(id, child, **args)
 
     registry_entry = CONDITION_REGISTRY[spec["condition"]]
-    args = dict(spec["args"])
+    args = dict(spec.get("args") or {})
     for arg in registry_entry.args:
         if arg.kind == "operand" and arg.name in args:
             args[arg.name] = build_operand(args[arg.name], definitions)

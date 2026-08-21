@@ -333,12 +333,28 @@ class RefCondition(BaseModel):
     args: RefArgs
 
 
+class SessionMinuteArgs(BaseModel):
+    """session_minute reads the clock, so it takes no arguments."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class SessionMinuteCondition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    condition: Literal["session_minute"]
+    id: str
+    enabled: bool = True
+    args: SessionMinuteArgs = SessionMinuteArgs()
+
+
 # The recursive union every condition slot (top-level or nested child) accepts.
 Condition = Annotated[
     Union[CombinatorCondition, SpreadCondition, SlopeCondition, CandleBodyCondition,
           CompareCondition, CandleWickCondition,
           KernelCondition, MultiplyCondition, BoostCondition, ExistsInWindowCondition,
-          ForAllInWindowCondition, RecentCrossoverUpwardCondition, RefCondition],
+          ForAllInWindowCondition, RecentCrossoverUpwardCondition,
+          SessionMinuteCondition, RefCondition],
     Field(discriminator="condition"),
 ]
 
