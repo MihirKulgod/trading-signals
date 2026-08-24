@@ -176,7 +176,7 @@ def backtest_tab() -> None:
 def latest_job():
     """Most recently submitted backtest, whether whole-strategy or a single block."""
     jobs = [j for name, j in RUNNER.all().items() if name.startswith(BACKTEST_JOB)]
-    return jobs[-1] if jobs else None
+    return max(jobs, key=lambda job: job.sequence) if jobs else None
 
 def _start_backtest() -> None:
     job = RUNNER.get(BACKTEST_JOB)

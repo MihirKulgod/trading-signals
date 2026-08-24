@@ -31,6 +31,10 @@ class Job:
     message: str = ""
     result: Any = None
     error: str | None = None
+    # Submission order. Jobs are keyed by name, and re-running one keeps its
+    # original position in the dict, so insertion order cannot say which ran
+    # most recently.
+    sequence: int = 0
     _cancel: threading.Event = field(default_factory=threading.Event)
 
     @property
@@ -59,13 +63,18 @@ class JobRunner:
                                         thread_name_prefix="job")
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
+        self._submissions = 0
 
     def submit(self, name: str, target: Callable[[Job], Any]) -> Job:
         with self._lock:
+            self._submissions += 1
             existing = self._jobs.get(name)
             if existing is not None and not existing.finished:
+                # Already in flight: reuse it, but treat the request as the most
+                # recent so asking for it again brings it back into view.
+                existing.sequence = self._submissions
                 return existing
-            job = Job(name=name)
+            job = Job(name=name, sequence=self._submissions)
             self._jobs[name] = job
 
         def run():
