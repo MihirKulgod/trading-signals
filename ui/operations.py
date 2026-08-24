@@ -384,6 +384,8 @@ def refresh_operations() -> None:
     from ui import dashboard
 
     _backtest_status.refresh()
-    # Refreshing rebuilds the panels, which would close an open editor.
-    if not dashboard.editing():
-        dashboard.dashboard_section.refresh()
+    # Repaint rather than refresh: rebuilding the grid would cancel a drag in
+    # progress and close an open editor.
+    from live_service import SERVICE
+
+    dashboard.repaint(SERVICE)

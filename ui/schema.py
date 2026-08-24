@@ -572,10 +572,19 @@ class DashboardPanel(BaseModel):
     name: str = ""
 
 
+class Dashboard(BaseModel):
+    """The live dashboard grid: panel size, and the panels themselves."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    size: float = Field(default=1.0, ge=0.6, le=1.4)
+    panels: list[DashboardPanel] = []
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     display: Display
     historical: Historical
     backtest: Backtest = Backtest()
-    dashboard: list[DashboardPanel] = []
+    dashboard: Dashboard = Dashboard()

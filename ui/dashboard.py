@@ -204,50 +204,94 @@ def countdown_state(service) -> tuple[float, float]:
     return min(1.0, elapsed / interval), max(0.0, elapsed - interval)
 
 
-def _countdown(service) -> None:
-    fraction, overdue = countdown_state(service)
-    running = getattr(service, "state", "") == "running"
-    due = overdue > 0
-    colour = "red" if (due and running) else ("primary" if running else "grey-5")
-    with ui.row().classes("items-center gap-2 no-wrap"):
-        ui.circular_progress(value=1.0 if due else fraction, min=0.0, max=1.0,
-                             size="34px", show_value=False, color=colour) \
-            .tooltip("Time until the next signal recalculation")
-        if not running:
-            ui.label("idle").classes(MUTED)
-        elif due:
-            ui.label(humanise(overdue)).classes("text-xs text-red-600 font-medium") \
-                .tooltip("Time since this recalculation was due to start")
-
-
 # ---------------------------------------------------------------------------
 # Panels
 # ---------------------------------------------------------------------------
 
-PANEL_STYLE = "width:265px;height:186px"
+PANEL_WIDTH = 265
+PANEL_HEIGHT = 186
+MIN_SIZE, MAX_SIZE = 0.6, 1.4
 HANDLE = "dash-handle"
 EDITING: set[int] = set()
 SHOW_ALL: set[int] = set()   # panels whose picker is showing every block
 
+# Element handles kept from the last build, so a tick can repaint values in
+# place. Rebuilding the grid each second cancelled any drag in progress.
+LIVE: dict[str, Any] = {"ring": None, "status": None, "panels": []}
+
+
+def dashboard_config(settings_doc) -> Any:
+    """The dashboard block, migrating the older bare-list form in passing."""
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+    node = settings_doc.get("dashboard")
+    if isinstance(node, list):
+        migrated = CommentedMap()
+        migrated["size"] = 1.0
+        migrated["panels"] = node
+        node = migrated
+    elif not isinstance(node, dict):
+        node = CommentedMap()
+    settings_doc["dashboard"] = node
+    node.setdefault("size", 1.0)
+    node.setdefault("panels", CommentedSeq())
+    return node
+
 
 def _panels(settings_doc) -> Any:
-    from ruamel.yaml.comments import CommentedSeq
+    return dashboard_config(settings_doc)["panels"]
 
-    return settings_doc.setdefault("dashboard", CommentedSeq())
+
+def panel_style(size: float) -> str:
+    return f"width:{round(PANEL_WIDTH * size)}px;height:{round(PANEL_HEIGHT * size)}px"
+
+
+def score_font(size: float) -> str:
+    return f"font-size:{1.5 * size:.2f}rem;line-height:1.1"
+
+
+def _countdown(service) -> None:
+    """The ring plus a status word; both are updated in place by repaint()."""
+    with ui.row().classes("items-center gap-2 no-wrap"):
+        LIVE["ring"] = ui.circular_progress(
+            value=0.0, min=0.0, max=1.0, size="34px", show_value=False) \
+            .tooltip("Time until the next signal recalculation")
+        LIVE["status"] = ui.label("").classes("text-xs font-medium") \
+            .tooltip("Time since this recalculation was due to start")
+    _paint_countdown(service)
+
+
+def _paint_countdown(service) -> None:
+    fraction, overdue = countdown_state(service)
+    running = getattr(service, "state", "") == "running"
+    due = overdue > 0 and running
+    LIVE["ring"].set_value(1.0 if due else fraction)
+    LIVE["ring"].props(f"color={'red' if due else ('primary' if running else 'grey-5')}")
+    LIVE["status"].set_text("idle" if not running else (humanise(overdue) if due else ""))
+    LIVE["status"].style("color:" + ("#dc2626" if due else "#6b7280"))
 
 
 @ui.refreshable
 def dashboard_section(settings_doc, strategy_doc, service, save) -> None:
-    panels = _panels(settings_doc)
+    config = dashboard_config(settings_doc)
+    panels = config["panels"]
+    size = float(config.get("size", 1.0) or 1.0)
     tree = condition_tree(strategy_doc)
-    scores = getattr(service, "node_scores", {}) or {}
-    engine_ran = getattr(service, "last_run", None) is not None
     disabled = disabled_ids(strategy_doc)
+    LIVE["panels"] = []
 
     with ui.row().classes("items-center gap-3 w-full"):
         ui.label("Dashboard").classes("font-medium")
         _countdown(service)
         ui.space()
+        ui.label("size").classes(MUTED)
+        # Dragging only restyles; the value is stored on release, so a drag
+        # does not rewrite settings.yaml on every step.
+        slider = ui.slider(min=MIN_SIZE, max=MAX_SIZE, step=0.05, value=size,
+                           on_change=lambda e: resize(clamp_size(e.value))) \
+            .props("dense").style("width:130px") \
+            .tooltip("Smaller panels fit more per row")
+        slider.on("change", lambda _: _set_size(config, slider.value, save))
         ui.button(icon="add", on_click=lambda: _add_panel(panels, save)) \
             .props("flat dense").tooltip("Add a panel")
         ui.button(icon="grid_view",
@@ -265,23 +309,17 @@ def dashboard_section(settings_doc, strategy_doc, service, save) -> None:
     )
     with grid:
         for index, panel in enumerate(panels):
-            _panel(index, panel, panels, tree, scores, engine_ran, disabled,
-                   strategy_doc, save)
+            _panel(index, panel, panels, tree, disabled, strategy_doc, size, save)
+    repaint(service)
 
 
-def _panel(index, panel, panels, tree, scores, engine_ran, disabled,
-           strategy_doc, save) -> None:
+def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save) -> None:
     block = panel.get("block") or ""
-    state, value = block_state(block, scores, engine_ran)
-    is_disabled = block in disabled
-    background = state_colour(state, value)
-    foreground = state_text_colour(state, value)
+    card = ui.card().classes("p-2 gap-1").style(panel_style(size))
+    record = {"block": block, "card": card, "disabled": block in disabled,
+              "score": None, "note": None, "children": []}
 
-    style = f"{PANEL_STYLE};background:{background};color:{foreground}"
-    if is_disabled:
-        style += ";opacity:0.55"
-
-    with ui.card().classes("p-2 gap-1").style(style):
+    with card:
         if index in EDITING:
             _editor(index, panel, panels, tree, strategy_doc, save)
             return
@@ -298,16 +336,15 @@ def _panel(index, panel, panels, tree, scores, engine_ran, disabled,
                 .props("flat dense size=sm").style("color:inherit")
 
         with ui.row().classes("items-baseline gap-2 w-full no-wrap"):
-            ui.label(format_score(value)).classes("text-2xl font-semibold leading-none")
-            if is_disabled:
-                ui.badge("disabled").props("color=grey-8")
-            elif state != "value":
-                ui.label(STATE_LABEL[state]).classes("text-xs").style("opacity:0.85")
+            record["score"] = ui.label("").classes("font-semibold").style(score_font(size))
+            record["note"] = ui.label("").classes("text-xs").style("opacity:0.85")
 
-        _children(block, tree, scores, engine_ran)
+        _children(record, block, tree)
+
+    LIVE["panels"].append(record)
 
 
-def _children(block, tree, scores, engine_ran) -> None:
+def _children(record, block, tree) -> None:
     """One rectangle per direct child. Children keep to a single level."""
     child_ids = tree.get(block, []) if block else []
     if not child_ids:
@@ -315,43 +352,72 @@ def _children(block, tree, scores, engine_ran) -> None:
     with ui.row().classes("w-full gap-1 flex-wrap content-start") \
             .style("flex:1;min-height:0;overflow:hidden"):
         for child_id in child_ids:
-            state, value = block_state(child_id, scores, engine_ran)
-            with ui.column().classes("items-center justify-center rounded p-1 gap-0").style(
-                    f"flex:1 1 0;min-width:52px;background:{state_colour(state, value)};"
-                    f"color:{state_text_colour(state, value)}"):
+            box = ui.column().classes("items-center justify-center rounded p-1 gap-0") \
+                .style("flex:1 1 0;min-width:52px")
+            with box:
                 ui.label(child_id).classes("truncate w-full text-center") \
                     .style("font-size:9px;line-height:1.1").tooltip(child_id)
-                ui.label("·" if state == "skipped" else format_score(value)) \
-                    .style("font-size:10px;font-weight:600;line-height:1.2") \
-                    .tooltip(STATE_LABEL.get(state, ""))
+                value = ui.label("").style("font-size:10px;font-weight:600;line-height:1.2")
+            record["children"].append((child_id, box, value))
 
 
-def _editor(index, panel, panels, tree, strategy_doc, save) -> None:
-    show_all = index in SHOW_ALL
-    options = sorted(tree) if show_all else top_level_ids(strategy_doc)
-    current = panel.get("block") or None
-    if current and current not in options:
-        options = [current] + list(options)
+def repaint(service) -> None:
+    """
+    Update scores and colours on the existing elements.
 
-    with ui.column().classes("w-full gap-1").style("color:#000"):
-        ui.select(options, value=current, label="condition block", with_input=True,
-                  on_change=lambda e, p=panel: _set(p, "block", e.value, save)) \
-            .props("dense options-dense").classes("w-full")
-        ui.input(label="display name", value=panel.get("name") or "",
-                 on_change=lambda e, p=panel: _set(p, "name", e.value, save)) \
-            .props("dense").classes("w-full")
-        with ui.row().classes("items-center gap-1 w-full no-wrap"):
-            ui.checkbox("all blocks", value=show_all,
-                        on_change=lambda e, i=index: _toggle_all(i, e.value)) \
-                .props("dense size=xs").tooltip("Show every block, not just combinations")
-            ui.space()
-            ui.button("Done", on_click=lambda i=index: _done(i)).props("flat dense size=sm")
-            ui.button(icon="delete",
-                      on_click=lambda i=index: _remove_panel(panels, i, save)) \
-                .props("flat dense size=sm color=negative")
+    Deliberately not a refresh: rebuilding the grid on every tick tore out the
+    element being dragged, so a reorder only survived if it beat the timer.
+    """
+    if not LIVE["panels"] and LIVE["ring"] is None:
+        return
+    scores = getattr(service, "node_scores", {}) or {}
+    engine_ran = getattr(service, "last_run", None) is not None
+    try:
+        if LIVE["ring"] is not None:
+            _paint_countdown(service)
+        for record in LIVE["panels"]:
+            state, value = block_state(record["block"], scores, engine_ran)
+            record["card"].style(f"background:{state_colour(state, value)};"
+                                 f"color:{state_text_colour(state, value)};"
+                                 f"opacity:{0.55 if record['disabled'] else 1}")
+            record["score"].set_text(format_score(value))
+            record["note"].set_text(
+                "disabled" if record["disabled"]
+                else ("" if state == "value" else STATE_LABEL[state]))
+            for child_id, box, label in record["children"]:
+                child_state, child_value = block_state(child_id, scores, engine_ran)
+                box.style(f"background:{state_colour(child_state, child_value)};"
+                          f"color:{state_text_colour(child_state, child_value)}")
+                label.set_text("\u00b7" if child_state == "skipped"
+                               else format_score(child_value))
+    except Exception:
+        # Elements from a previous page build; the next render replaces them.
+        LIVE["panels"] = []
+
+
+def resize(size: float) -> None:
+    """Panel size is only CSS, so apply it without rebuilding the grid."""
+    for record in LIVE["panels"]:
+        record["card"].style(panel_style(size))
+        if record["score"] is not None:
+            record["score"].style(score_font(size))
 
 
 # --- mutations -------------------------------------------------------------
+
+
+def clamp_size(value) -> float:
+    if value is None:
+        return 1.0
+    return max(MIN_SIZE, min(MAX_SIZE, float(value)))
+
+
+def _set_size(config, value, save) -> None:
+    """Called on slider release; dragging only calls resize()."""
+    size = clamp_size(value)
+    config["size"] = round(size, 2)
+    resize(size)
+    save()
 
 
 def _set(panel, key, value, save) -> None:
