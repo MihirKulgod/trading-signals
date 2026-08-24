@@ -37,6 +37,11 @@ def _settings_doc():
 
     return app.DOCS["settings"]
 
+def _strategy_doc():
+    from ui import app
+
+    return app.DOCS["strategy"]
+
 def _persist_settings() -> None:
     from ui import persistence
 
@@ -223,6 +228,7 @@ def _backtest_status() -> None:
 @ui.refreshable
 def live_tab() -> None:
     from live_service import SERVICE
+    from ui import dashboard
 
     with ui.card().classes("w-full"):
         with ui.row().classes("items-center gap-3"):
@@ -241,6 +247,10 @@ def live_tab() -> None:
                      + ", ".join(SERVICE.disabled)).classes("text-warning text-sm")
 
     _live_scores()
+
+    with ui.card().classes("w-full"):
+        dashboard.dashboard_section(
+            _settings_doc(), _strategy_doc(), SERVICE.node_scores, _persist_settings)
 
 def _start_live() -> None:
     from live_service import SERVICE
@@ -390,5 +400,10 @@ def _show_image(name: str) -> None:
 
 def refresh_operations() -> None:
     """Called on a timer by the page so job and engine state stay current."""
+    from ui import dashboard
+
     _backtest_status.refresh()
     _live_scores.refresh()
+    # Refreshing rebuilds the panels, which would close an open editor.
+    if not dashboard.editing():
+        dashboard.dashboard_section.refresh()

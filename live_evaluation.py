@@ -17,6 +17,10 @@ class LiveEvaluator:
         self.score_history: dict[str, deque] = {
             c.id: deque(maxlen=history_length) for c in self.conditions
         }
+        # Every node's score, not just the top-level ones, so a dashboard can
+        # show what a combination's children are doing. Replaced wholesale at
+        # the end of a cycle so a reader never sees it half filled.
+        self.node_scores: dict[str, float] = {}
 
     def run_once(self, now: pd.Timestamp) -> dict[str, float]:
         print("> Running evaluator..")
@@ -38,4 +42,5 @@ class LiveEvaluator:
             if previous is not None and previous < 0 and score >= 0:
                 self.notifier.notify_onset(condition.id, score, now)
 
+        self.node_scores = dict(ctx.trace)
         return scores

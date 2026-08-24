@@ -46,6 +46,8 @@ class LiveService:
         self.error: str | None = None
         self.last_run: pd.Timestamp | None = None
         self.scores: dict[str, float] = {}
+        # Every node's score, for the dashboard's child rectangles.
+        self.node_scores: dict[str, float] = {}
         self.disabled: list[str] = []
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -94,6 +96,7 @@ class LiveService:
                 if time.monotonic() - last_recompute >= self.recompute_seconds:
                     now = pd.Timestamp.now(tz="Asia/Kolkata").tz_localize(None)
                     self.scores = evaluator.run_once(now)
+                    self.node_scores = evaluator.node_scores
                     self.last_run = now
                     last_recompute = time.monotonic()
             except Exception as error:

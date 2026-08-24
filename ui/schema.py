@@ -563,9 +563,19 @@ class Backtest(BaseModel):
     visualize: bool = False
 
 
+class DashboardPanel(BaseModel):
+    """One monitor on the live dashboard grid."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    block: str = ""
+    name: str = ""
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     display: Display
     historical: Historical
     backtest: Backtest = Backtest()
+    dashboard: list[DashboardPanel] = []
