@@ -85,6 +85,9 @@ def read_candles(filepath, start_date=None, end_date=None):
     df = pd.read_csv(filepath)
     df["datetime"] = pd.to_datetime(df["datetime"])
     df = df.set_index("datetime").sort_index()
+    # Downloads append, and a re-download of the same day writes those minutes
+    # again; the newest copy wins.
+    df = df[~df.index.duplicated(keep="last")]
 
     if start_date is not None:
         df = df[df.index >= pd.Timestamp(start_date)]
@@ -203,7 +206,7 @@ def check_coverage(candles, start_date: date, end_date: date, trading_symbol: st
             "Re-run with candle download enabled, or narrow the date range."
         )
 
-def get_historical(kite: KiteConnect, instruments_info, start_date: date, end_date: date, start_time, stop_time, download_data=True, wipe_file=True):
+def get_historical(kite: KiteConnect, instruments_info, start_date: date, end_date: date, start_time, stop_time, download_data=True, wipe_file=True, require_coverage=True):
     result = []
     if not download_data:
         print("Skipping data download..")
@@ -225,7 +228,10 @@ def get_historical(kite: KiteConnect, instruments_info, start_date: date, end_da
         print(f"{len(outside_session)} candles were found outside the specified range of {start_time}-{stop_time} [{instrument["trading_symbol"]}]")
         candles = candles.between_time(start_time, stop_time)
 
-        check_coverage(candles, start_date, end_date, instrument["trading_symbol"])
+        # Live asks for a generous span and judges sufficiency by session count
+        # instead, so a young futures contract does not abort the engine.
+        if require_coverage:
+            check_coverage(candles, start_date, end_date, instrument["trading_symbol"])
         candles = candles[(candles.index.date >= start_date) & (candles.index.date <= end_date)]
 
         instrument.pop("token")

@@ -13,7 +13,7 @@ from __future__ import annotations
 import threading
 import time
 import traceback
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import yaml
@@ -23,7 +23,8 @@ import app_paths
 from app_logging import get_logger
 from condition import disabled_condition_ids
 from data_processing import generate_base
-from data_retrieval import get_historical, historical_csv_path, parse_instruments
+from data_retrieval import (InsufficientHistoryError, get_historical,
+                            historical_csv_path, parse_instruments)
 from live_candles import LiveCandleBuilder
 from live_evaluation import LiveEvaluator
 from login import get_kite
@@ -33,7 +34,13 @@ from streaming import start_ticker
 log = get_logger(__name__)
 
 RECOMPUTE_INTERVAL_SECONDS = 30
-WINDOW_DAYS = 7
+# Sessions the engine evaluates over. Indicators are computed on just this
+# window, and the 60-minute MACD signal needs about six sessions to converge,
+# so a smaller window quietly yields under-converged scores.
+WINDOW_DAYS = 10
+# Calendar days of candles to pull so that WINDOW_DAYS sessions actually exist,
+# with room for weekends and holidays.
+HISTORY_DAYS = 30
 SESSION_START = "09:15"
 SESSION_END = "15:30"
 
@@ -106,6 +113,20 @@ class LiveService:
                 last_recompute = time.monotonic()
             self._stop.wait(1.0)
 
+    def _check_sessions(self, instruments_data) -> None:
+        """
+        The engine needs WINDOW_DAYS sessions; without them the wider timeframes
+        never converge and most combinations score NaN rather than failing.
+        """
+        for instrument in instruments_data:
+            sessions = len({t.date() for t in instrument["candles"].index})
+            if sessions < self.window_days:
+                raise InsufficientHistoryError(
+                    f"{instrument['trading_symbol']}: only {sessions} session(s) of "
+                    f"candles available, need {self.window_days}. Widen HISTORY_DAYS "
+                    "or check the instrument has traded long enough."
+                )
+
     def _bootstrap(self):
         config = yaml.safe_load(app_paths.strategy_path().read_text(encoding="utf-8"))
 
@@ -121,9 +142,11 @@ class LiveService:
                      for i in instruments_info}
 
         instruments_data = get_historical(
-            kite, instruments_info, date.today(), date.today(),
-            SESSION_START, SESSION_END, download_data=True, wipe_file=False,
+            kite, instruments_info, date.today() - timedelta(days=HISTORY_DAYS),
+            date.today(), SESSION_START, SESSION_END,
+            download_data=True, wipe_file=False, require_coverage=False,
         )
+        self._check_sessions(instruments_data)
         generate_base(config, instruments_data)
 
         builder = LiveCandleBuilder(instruments_data, token_to_id, csv_paths)
