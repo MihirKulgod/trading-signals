@@ -772,7 +772,9 @@ def _operand_summary(op) -> str:
     if op.get("type") == "value":
         return str(op.get("value"))
     if op.get("type") == "reference":
-        text = f"{op.get('instrument_id')}/{op.get('timeframe')}/{op.get('col_name')}"
+        # A candle reference carries no col_name; the condition picks the columns.
+        parts = [op.get("instrument_id"), op.get("timeframe"), op.get("col_name")]
+        text = "/".join(str(part) for part in parts if part)
         lookback = op.get("lookback") or 0
         return f"{text} (t-{lookback})" if lookback else text
     return ""  # condition operands render as a nested node instead
@@ -857,6 +859,77 @@ def _ref_preview(node: CommentedMap) -> None:
                     ui.label(row["detail"]).classes("text-xs text-gray-500")
 
 
+# --- structure overlay ------------------------------------------------------
+
+
+def _node_key(path: tuple) -> str:
+    """Unique per position in the tree, since one definition can appear twice."""
+    return "/".join(str(part) for part in path)
+
+
+def _structure_nodes(node, seen: frozenset = frozenset(), path: tuple = ("root",)) -> list[dict]:
+    """
+    ``ui.tree`` nodes for a condition, with every ref replaced by what it points
+    at, so the result reads as the condition's semantics rather than its wiring.
+    """
+    if not isinstance(node, dict) or len(path) > PREVIEW_MAX_DEPTH:
+        return []
+    cond_type = node.get("condition")
+
+    if cond_type == "ref":
+        target = (node.get("args") or {}).get("target")
+        if target in seen:
+            return [{"id": _node_key(path), "label": f"↺ {target} (shown above)"}]
+        definition = _find_definition(target)
+        if definition is None:
+            return [{"id": _node_key(path), "label": f"⚠ {target} is not in definitions"}]
+        # Take the ref's place rather than nesting under it.
+        return _structure_nodes(definition, seen | {target}, path)
+
+    label = f"{cond_type}   ·   {node.get('id', '')}"
+    detail = _node_detail(node)
+    if detail:
+        label += f"   ·   {detail}"
+
+    children: list[dict] = []
+    args = node.get("args")
+    if _is_combinator(cond_type):
+        for index, child in enumerate(args or []):
+            children += _structure_nodes(child, seen, path + (index,))
+    elif isinstance(args, dict):
+        for spec in _specs_for(cond_type):
+            value = args.get(spec["name"])
+            if spec["kind"] == "condition":
+                children += _structure_nodes(value, seen, path + (spec["name"],))
+            elif spec["kind"] in ("operand", "reference", "candle_reference") \
+                    and isinstance(value, dict) and value.get("type") == "condition":
+                children += _structure_nodes(value.get("input"), seen, path + (spec["name"],))
+
+    entry = {"id": _node_key(path), "label": label}
+    if children:
+        entry["children"] = children
+    return [entry]
+
+
+def _show_structure(node: CommentedMap) -> None:
+    nodes = _structure_nodes(node)
+    with ui.dialog() as dialog, ui.card().classes("w-[950px] max-w-[95vw]"):
+        with ui.row().classes("items-center gap-2 w-full"):
+            ui.label(f"Structure — {node.get('id', '')}").classes("font-medium")
+            ui.space()
+            ui.button(icon="unfold_more", on_click=lambda: tree.expand()) \
+                .props("flat dense").tooltip("Expand all")
+            ui.button(icon="unfold_less", on_click=lambda: tree.collapse()) \
+                .props("flat dense").tooltip("Collapse all")
+            ui.button(icon="close", on_click=dialog.close).props("flat dense")
+        ui.label("Read-only. References are replaced by the definition they point at.") \
+            .classes(MUTED)
+        with ui.scroll_area().classes("w-full").style("height:70vh"):
+            tree = ui.tree(nodes, label_key="label").props("dense no-connectors")
+            tree.expand()
+    dialog.open()
+
+
 def _nested_condition_editor(args: CommentedMap, key: str, depth: int) -> None:
     child = args.get(key)
     if not isinstance(child, dict):
@@ -928,6 +1001,8 @@ def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabl
                     .props("flat dense").tooltip("Add child")
                 _paste_button(lambda n=node: _paste_append(n.setdefault("args", CommentedSeq())),
                               "Paste as child")
+            ui.button(icon="account_tree", on_click=lambda n=node: _show_structure(n)) \
+                .props("flat dense").tooltip("View this block's full structure")
             ui.button(icon="play_arrow", on_click=lambda n=node: _run_condition(n)) \
                 .props("flat dense").tooltip("Backtest this block on its own")
             ui.button(icon="content_copy", on_click=lambda n=node: _copy_condition(n)) \
