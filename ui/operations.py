@@ -246,11 +246,9 @@ def live_tab() -> None:
             ui.label(f"{len(SERVICE.disabled)} condition(s) disabled and will not alert: "
                      + ", ".join(SERVICE.disabled)).classes("text-warning text-sm")
 
-    _live_scores()
-
     with ui.card().classes("w-full"):
         dashboard.dashboard_section(
-            _settings_doc(), _strategy_doc(), SERVICE.node_scores, _persist_settings)
+            _settings_doc(), _strategy_doc(), SERVICE, _persist_settings)
 
 def _start_live() -> None:
     from live_service import SERVICE
@@ -263,23 +261,6 @@ def _stop_live() -> None:
     SERVICE.stop()
     ui.notify("Live engine stopped")
     live_tab.refresh()
-
-@ui.refreshable
-def _live_scores() -> None:
-    from live_service import SERVICE
-
-    if not SERVICE.scores:
-        ui.label("No scores yet — the engine publishes after its first cycle.").classes(MUTED)
-        return
-    ui.label(f"last cycle: {SERVICE.last_run}").classes(MUTED)
-    with ui.card().classes("w-full"):
-        for cid, score in sorted(SERVICE.scores.items()):
-            with ui.row().classes("items-center gap-3 w-full"):
-                ui.badge("open" if score >= 0 else "shut").props(
-                    "color=positive" if score >= 0 else "color=grey")
-                ui.label(cid).classes("font-medium")
-                ui.space()
-                ui.label(f"{score:+.3f}").classes(MUTED)
 
 CHARTS_ROUTE = "/charts"
 
@@ -403,7 +384,6 @@ def refresh_operations() -> None:
     from ui import dashboard
 
     _backtest_status.refresh()
-    _live_scores.refresh()
     # Refreshing rebuilds the panels, which would close an open editor.
     if not dashboard.editing():
         dashboard.dashboard_section.refresh()
