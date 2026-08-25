@@ -182,7 +182,19 @@ def backtest_tab() -> None:
 
 # The frame is ~70 MB, so it is read once and kept until the file changes.
 _SIGNALS: dict = {"key": None, "frame": None}
-INSPECT: dict = {"column": None, "position": None}
+INSPECT: dict = {"column": None, "position": None, "residual": 0.0}
+# Handles from the last build, so stepping repaints instead of rebuilding: the
+# panel holds a select with hundreds of options and rebuilding it per row makes
+# scrolling stutter.
+_PANEL: dict = {"value": None, "caption": None, "counter": None, "moment": None}
+
+# A mouse detent reports one large deltaY, but how large depends on the browser
+# and OS (53, 100, 120 ...), so anything past DETENT counts as exactly one row
+# and one minute per click holds on any device. Trackpads instead emit a stream
+# of small values, which accumulate, carrying the remainder so that a slow drag
+# still eventually moves.
+WHEEL_DETENT = 50.0
+WHEEL_NOTCH = 40.0
 
 
 def _signals_frame():
@@ -199,34 +211,68 @@ def _signals_frame():
     return _SIGNALS["frame"]
 
 
+def _paint() -> None:
+    """Write the current row onto the existing elements."""
+    from ui import dashboard
+
+    frame = _signals_frame()
+    if frame is None or _PANEL["value"] is None:
+        return
+    position = INSPECT["position"]
+    stamp = frame.index[position]
+    value = frame[INSPECT["column"]].iloc[position]
+    try:
+        _PANEL["value"].set_text("—" if value != value else f"{value:+.4f}")
+        _PANEL["value"].style(f"background:{dashboard.score_colour(value)};"
+                              f"color:{dashboard.text_colour(value)}")
+        _PANEL["caption"].set_text(f"{INSPECT['column']} at {stamp:%Y-%m-%d %H:%M}")
+        _PANEL["counter"].set_text(f"row {position + 1:,} of {len(frame):,}")
+        _PANEL["moment"].set_value(stamp.strftime("%Y-%m-%d %H:%M"))
+    except Exception:
+        _PANEL["value"] = None          # elements from a previous page build
+
+
 def _step(rows: int) -> None:
     frame = _signals_frame()
     if frame is None:
         return
-    INSPECT["position"] = max(0, min(len(frame) - 1, (INSPECT["position"] or 0) + rows))
-    _signal_inspector.refresh()
+    position = max(0, min(len(frame) - 1, (INSPECT["position"] or 0) + rows))
+    if position == INSPECT["position"]:
+        return
+    INSPECT["position"] = position
+    _paint()
 
 
 def _wheel(event) -> None:
-    delta = (event.args or {}).get("deltaY", 0)
-    if delta:
-        _step(1 if delta > 0 else -1)   # scrolling down moves later in the file
+    delta = (event.args or {}).get("deltaY") or 0
+    if abs(delta) >= WHEEL_DETENT:                   # a mouse click of the wheel
+        INSPECT["residual"] = 0.0
+        _step(-1 if delta > 0 else 1)                # scrolling down goes back in time
+        return
+    INSPECT["residual"] += delta
+    steps = int(INSPECT["residual"] / WHEEL_NOTCH)   # truncates toward zero
+    if not steps:
+        return
+    INSPECT["residual"] -= steps * WHEEL_NOTCH
+    _step(-steps)
 
 
 def _seek(text: str) -> None:
+    """Jump to a typed moment. Only called on Enter or blur, never mid-edit."""
     import pandas as pd
 
     frame = _signals_frame()
-    if frame is None or not text:
+    if frame is None or not str(text).strip():
         return
     try:
-        wanted = pd.Timestamp(text)
+        wanted = pd.Timestamp(str(text).strip())
     except ValueError:
         ui.notify(f"Could not read {text!r} as a date and time", type="warning")
+        _paint()                       # put the last good moment back in the box
         return
     # Nearest, because the typed moment may fall outside a session.
     INSPECT["position"] = int(frame.index.get_indexer([wanted], method="nearest")[0])
-    _signal_inspector.refresh()
+    _paint()
 
 
 def _set_date(date_text: str) -> None:
@@ -237,10 +283,13 @@ def _set_date(date_text: str) -> None:
     _seek(f"{date_text} {current.strftime('%H:%M')}")
 
 
+def _set_column(column: str) -> None:
+    INSPECT["column"] = column
+    _paint()
+
+
 @ui.refreshable
 def _signal_inspector() -> None:
-    from ui import dashboard
-
     frame = _signals_frame()
     if frame is None:
         ui.label("No cached signals — run a backtest with 'reuse cached signals' off.") \
@@ -255,15 +304,11 @@ def _signal_inspector() -> None:
         INSPECT["column"] = columns[0]
     if INSPECT["position"] is None:
         INSPECT["position"] = len(frame) - 1
-    position = max(0, min(len(frame) - 1, INSPECT["position"]))
-    INSPECT["position"] = position
-
-    stamp = frame.index[position]
-    value = frame[INSPECT["column"]].iloc[position]
-    shown = "—" if value != value else f"{value:+.4f}"   # NaN prints as a dash
+    INSPECT["position"] = max(0, min(len(frame) - 1, INSPECT["position"]))
+    stamp = frame.index[INSPECT["position"]]
 
     card = ui.card().classes("w-full")
-    card.on("wheel", _wheel, ["deltaY"], throttle=0.03)
+    card.on("wheel", _wheel, ["deltaY"])   # unthrottled: a dropped event loses its delta
     with card:
         with ui.row().classes("items-center gap-2 w-full"):
             ui.label("Inspect cached signals").classes("font-medium")
@@ -271,31 +316,35 @@ def _signal_inspector() -> None:
                      f"{frame.index[-1].date()}").classes(MUTED)
         with ui.row().classes("items-center gap-3 flex-wrap"):
             ui.select(columns, value=INSPECT["column"], label="column", with_input=True,
-                      on_change=lambda e: (INSPECT.__setitem__("column", e.value),
-                                           _signal_inspector.refresh())) \
+                      on_change=lambda e: _set_column(e.value)) \
                 .props("dense options-dense").classes("min-w-[280px]")
+            # Committed on Enter or on leaving the field. Validating per keystroke
+            # made a half-deleted time like "10:4" parse as 10:04 and jump.
             moment = ui.input(label="date and time",
-                              value=stamp.strftime("%Y-%m-%d %H:%M"),
-                              on_change=lambda e: _seek(e.value)).props("dense")
+                              value=stamp.strftime("%Y-%m-%d %H:%M")).props("dense")
+            moment.on("keydown.enter", lambda: _seek(moment.value))
+            moment.on("blur", lambda: _seek(moment.value))
             with ui.menu().props("no-parent-event") as calendar:
                 ui.date(value=str(stamp.date()), on_change=lambda e: _set_date(e.value))
                 with ui.row().classes("justify-end"):
                     ui.button("Close", on_click=calendar.close).props("flat")
             with moment.add_slot("append"):
                 ui.icon("edit_calendar").on("click", calendar.open).classes("cursor-pointer")
-            ui.button(icon="arrow_upward", on_click=lambda: _step(-1)) \
-                .props("flat dense").tooltip("One minute earlier")
-            ui.button(icon="arrow_downward", on_click=lambda: _step(1)) \
+            ui.button(icon="arrow_upward", on_click=lambda: _step(1)) \
                 .props("flat dense").tooltip("One minute later")
+            ui.button(icon="arrow_downward", on_click=lambda: _step(-1)) \
+                .props("flat dense").tooltip("One minute earlier")
         with ui.row().classes("items-center gap-3"):
-            ui.label(shown).classes("text-2xl font-semibold px-3 py-1 rounded") \
-                .style(f"background:{dashboard.score_colour(value)};"
-                       f"color:{dashboard.text_colour(value)}")
-            ui.label(f"{INSPECT['column']} at {stamp:%Y-%m-%d %H:%M}").classes(MUTED)
+            value = ui.label("").classes("text-2xl font-semibold px-3 py-1 rounded")
+            caption = ui.label("").classes(MUTED)
             ui.space()
-            ui.label(f"row {position + 1:,} of {len(frame):,}").classes(MUTED)
+            counter = ui.label("").classes(MUTED)
         ui.label("Scroll over this panel to step through the file a minute at a time.") \
             .classes(MUTED)
+
+    _PANEL.update(value=value, caption=caption, counter=counter, moment=moment)
+    INSPECT["residual"] = 0.0
+    _paint()
 
 
 def latest_job():
