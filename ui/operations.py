@@ -211,6 +211,35 @@ def _signals_frame():
     return _SIGNALS["frame"]
 
 
+def _child_ids() -> list:
+    """Direct children of the inspected column, per the engine's own tree."""
+    from ui import dashboard
+
+    try:
+        return dashboard.condition_tree(_strategy_doc()).get(INSPECT["column"], [])
+    except Exception:
+        return []
+
+
+def _paint_children() -> None:
+    from ui import dashboard
+
+    frame = _signals_frame()
+    if frame is None:
+        return
+    position = INSPECT["position"]
+    for child, label in _PANEL.get("children") or []:
+        if child not in frame.columns:
+            # The cache predates this block, so it was never evaluated.
+            label.set_text("n/a")
+            label.style("background:#e5e7eb;color:#6b7280")
+            continue
+        value = frame[child].iloc[position]
+        label.set_text("—" if value != value else f"{value:+.3f}")
+        label.style(f"background:{dashboard.score_colour(value)};"
+                    f"color:{dashboard.text_colour(value)}")
+
+
 def _paint() -> None:
     """Write the current row onto the existing elements."""
     from ui import dashboard
@@ -228,8 +257,30 @@ def _paint() -> None:
         _PANEL["caption"].set_text(f"{INSPECT['column']} at {stamp:%Y-%m-%d %H:%M}")
         _PANEL["counter"].set_text(f"row {position + 1:,} of {len(frame):,}")
         _PANEL["moment"].set_value(stamp.strftime("%Y-%m-%d %H:%M"))
+        _paint_children()
     except Exception:
         _PANEL["value"] = None          # elements from a previous page build
+
+
+@ui.refreshable
+def _children_list() -> None:
+    """Rebuilt when the column changes; its values are repainted on every step."""
+    _PANEL["children"] = []
+    children = _child_ids()
+    ui.label(f"direct children ({len(children)})").classes(MUTED)
+    if not children:
+        ui.label("this block has none").classes(MUTED)
+        return
+    with ui.column().classes("gap-1 w-full").style("max-height:150px;overflow:auto"):
+        for child in children:
+            with ui.row().classes("items-center gap-2 no-wrap w-full cursor-pointer") \
+                    .on("click", lambda c=child: _set_column(c)) \
+                    .tooltip(f"Inspect {child}"):
+                label = ui.label("").classes("text-xs font-semibold px-1 rounded") \
+                    .style("min-width:58px;text-align:center")
+                ui.label(child).classes("text-xs truncate")
+            _PANEL["children"].append((child, label))
+    _paint_children()
 
 
 def _step(rows: int) -> None:
@@ -284,7 +335,12 @@ def _set_date(date_text: str) -> None:
 
 
 def _set_column(column: str) -> None:
+    if not column or column == INSPECT["column"]:
+        return
     INSPECT["column"] = column
+    if _PANEL.get("select") is not None:
+        _PANEL["select"].set_value(column)   # keep the picker in step when a child is clicked
+    _children_list.refresh()
     _paint()
 
 
@@ -314,9 +370,15 @@ def _signal_inspector() -> None:
             ui.label("Inspect cached signals").classes("font-medium")
             ui.label(f"{len(frame):,} rows · {frame.index[0].date()} to "
                      f"{frame.index[-1].date()}").classes(MUTED)
+        outer = ui.row().classes("w-full gap-4 items-start no-wrap")
+    with outer:
+        left = ui.column().classes("grow gap-2 min-w-0")
+        right = ui.column().classes("gap-1 shrink-0").style("width:250px")
+    with left:
         with ui.row().classes("items-center gap-3 flex-wrap"):
-            ui.select(columns, value=INSPECT["column"], label="column", with_input=True,
-                      on_change=lambda e: _set_column(e.value)) \
+            select = ui.select(columns, value=INSPECT["column"], label="column",
+                               with_input=True,
+                               on_change=lambda e: _set_column(e.value)) \
                 .props("dense options-dense").classes("min-w-[280px]")
             # Committed on Enter or on leaving the field. Validating per keystroke
             # made a half-deleted time like "10:4" parse as 10:04 and jump.
@@ -334,15 +396,18 @@ def _signal_inspector() -> None:
                 .props("flat dense").tooltip("One minute later")
             ui.button(icon="arrow_downward", on_click=lambda: _step(-1)) \
                 .props("flat dense").tooltip("One minute earlier")
-        with ui.row().classes("items-center gap-3"):
+        with ui.row().classes("items-center gap-3 w-full"):
             value = ui.label("").classes("text-2xl font-semibold px-3 py-1 rounded")
             caption = ui.label("").classes(MUTED)
             ui.space()
             counter = ui.label("").classes(MUTED)
         ui.label("Scroll over this panel to step through the file a minute at a time.") \
             .classes(MUTED)
+    with right:
+        _children_list()
 
-    _PANEL.update(value=value, caption=caption, counter=counter, moment=moment)
+    _PANEL.update(value=value, caption=caption, counter=counter, moment=moment,
+                  select=select)
     INSPECT["residual"] = 0.0
     _paint()
 
