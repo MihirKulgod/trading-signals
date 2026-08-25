@@ -128,6 +128,7 @@ def run_single_condition(strategy_doc, node_id: str):
             config, settings, start, end,
             download_data=options["download"], reuse_signals=False, visualize=True,
             progress=job.report, cache_signals=False, chart_valid_days=True,
+            merge_block=node_id,
         )
         stats = signal_stats(df, list(days))
         return {

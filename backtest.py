@@ -28,6 +28,7 @@ CACHE_DIR = app_paths.cache_dir()
 SIGNAL_CACHE_PATH = CACHE_DIR / "signals.csv"
 CONDITION_COLS_CACHE_PATH = CACHE_DIR / "condition_cols.yaml"
 CHILDREN_MAP_CACHE_PATH = CACHE_DIR / "children_map.yaml"
+PATCHED_BLOCKS_PATH = CACHE_DIR / "patched_blocks.yaml"
 
 OUTPUT_DIR = app_paths.output_dir()
 
@@ -53,6 +54,49 @@ def save_cached_signals(df, condition_cols, children_map):
         yaml.safe_dump(condition_cols, f, default_flow_style=False)
     with open(CHILDREN_MAP_CACHE_PATH, 'w') as f:
         yaml.safe_dump(children_map, f, default_flow_style=False)
+    # A whole-strategy run makes the cache one coherent evaluation again.
+    if os.path.isfile(PATCHED_BLOCKS_PATH):
+        os.remove(PATCHED_BLOCKS_PATH)
+
+def patched_blocks() -> list:
+    if not os.path.isfile(PATCHED_BLOCKS_PATH):
+        return []
+    with open(PATCHED_BLOCKS_PATH) as f:
+        return yaml.safe_load(f) or []
+
+def merge_cached_signals(df, children_map, block_id):
+    """
+    Fold one block's freshly evaluated columns into the cached run.
+
+    A block run covers part of the strategy over its own date range, so its
+    columns replace whatever the cache held and read NaN outside that range --
+    the run genuinely did not evaluate them there. Every other column is left
+    alone, and condition_cols still describes the whole-strategy run, so
+    --reuse-signals keeps working; the patched ids are recorded so it can say
+    the file is no longer a single evaluation.
+    """
+    if not os.path.isfile(SIGNAL_CACHE_PATH):
+        save_cached_signals(df, list(df.columns), children_map)
+        return "created"
+
+    cached, condition_cols, cached_children = load_cached_signals()
+    # Read the marker before anything opens it for writing.
+    patched = sorted(set(patched_blocks()) | {block_id})
+
+    index = cached.index.union(df.index)
+    incoming = df.reindex(index)
+    merged = cached.reindex(index).drop(columns=list(df.columns), errors="ignore")
+    merged = pd.concat([merged, incoming], axis=1)[
+        list(dict.fromkeys(list(cached.columns) + list(df.columns)))]
+    cached_children.update(children_map)
+
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    merged.to_csv(SIGNAL_CACHE_PATH, index=True, sep=',', encoding="utf-8")
+    with open(CHILDREN_MAP_CACHE_PATH, 'w') as f:
+        yaml.safe_dump(cached_children, f, default_flow_style=False)
+    with open(PATCHED_BLOCKS_PATH, 'w') as f:
+        yaml.safe_dump(patched, f, default_flow_style=False)
+    return f"merged {len(df.columns)} column(s)"
 
 def tier_columns(df, condition_cols, children_map):
     """Direct children of each top-level condition (the tiers of a sequential)."""
@@ -163,7 +207,8 @@ def report_selection(config, only):
 
 def run_backtest(config, settings, start_date: date, end_date: date,
                  download_data=False, reuse_signals=False, visualize=True, only=None,
-                 progress=None, cache_signals=True, chart_valid_days=False):
+                 progress=None, cache_signals=True, chart_valid_days=False,
+                 merge_block=None):
     selected = report_selection(config, only)
     kite = get_kite()
 
@@ -183,10 +228,18 @@ def run_backtest(config, settings, start_date: date, end_date: date,
                 f"cached signals cover {sorted(condition_cols)} but this run selects "
                 f"{sorted(selected)}; re-run without --reuse-signals"
             )
+        patched = patched_blocks()
+        if patched:
+            print(f"WARNING: the cache has been patched by single-block runs "
+                  f"({', '.join(patched)}), so it is no longer one evaluation. "
+                  "Re-run without --reuse-signals for coherent results.")
     else:
         reset_reference_warnings()
         df, condition_cols, children_map = generate_signals(config, instruments_data, only, progress)
-        if cache_signals:
+        if merge_block is not None:
+            print(f"Merging {merge_block} into the cached signal values..")
+            print(f"  {merge_cached_signals(df, children_map, merge_block)}")
+        elif cache_signals:
             print("Caching generated signal values..")
             save_cached_signals(df, condition_cols, children_map)
 
