@@ -176,6 +176,127 @@ def backtest_tab() -> None:
             ui.button("Cancel", icon="stop", on_click=_cancel_backtest).props("flat")
 
     _backtest_status()
+    _signal_inspector()
+
+# --- cached-signal inspector -----------------------------------------------
+
+# The frame is ~70 MB, so it is read once and kept until the file changes.
+_SIGNALS: dict = {"key": None, "frame": None}
+INSPECT: dict = {"column": None, "position": None}
+
+
+def _signals_frame():
+    import pandas as pd
+
+    path = app_paths.cache_dir() / "signals.csv"
+    if not path.is_file():
+        return None
+    stat = path.stat()
+    key = (stat.st_mtime_ns, stat.st_size)
+    if _SIGNALS["key"] != key:
+        _SIGNALS["frame"] = pd.read_csv(path, index_col="datetime", parse_dates=True)
+        _SIGNALS["key"] = key
+    return _SIGNALS["frame"]
+
+
+def _step(rows: int) -> None:
+    frame = _signals_frame()
+    if frame is None:
+        return
+    INSPECT["position"] = max(0, min(len(frame) - 1, (INSPECT["position"] or 0) + rows))
+    _signal_inspector.refresh()
+
+
+def _wheel(event) -> None:
+    delta = (event.args or {}).get("deltaY", 0)
+    if delta:
+        _step(1 if delta > 0 else -1)   # scrolling down moves later in the file
+
+
+def _seek(text: str) -> None:
+    import pandas as pd
+
+    frame = _signals_frame()
+    if frame is None or not text:
+        return
+    try:
+        wanted = pd.Timestamp(text)
+    except ValueError:
+        ui.notify(f"Could not read {text!r} as a date and time", type="warning")
+        return
+    # Nearest, because the typed moment may fall outside a session.
+    INSPECT["position"] = int(frame.index.get_indexer([wanted], method="nearest")[0])
+    _signal_inspector.refresh()
+
+
+def _set_date(date_text: str) -> None:
+    frame = _signals_frame()
+    if frame is None or not date_text:
+        return
+    current = frame.index[INSPECT["position"] or 0]
+    _seek(f"{date_text} {current.strftime('%H:%M')}")
+
+
+@ui.refreshable
+def _signal_inspector() -> None:
+    from ui import dashboard
+
+    frame = _signals_frame()
+    if frame is None:
+        ui.label("No cached signals — run a backtest with 'reuse cached signals' off.") \
+            .classes(MUTED)
+        return
+    if not len(frame.columns) or not len(frame):
+        ui.label("Cached signals file is empty.").classes(MUTED)
+        return
+
+    columns = list(frame.columns)
+    if INSPECT["column"] not in columns:
+        INSPECT["column"] = columns[0]
+    if INSPECT["position"] is None:
+        INSPECT["position"] = len(frame) - 1
+    position = max(0, min(len(frame) - 1, INSPECT["position"]))
+    INSPECT["position"] = position
+
+    stamp = frame.index[position]
+    value = frame[INSPECT["column"]].iloc[position]
+    shown = "—" if value != value else f"{value:+.4f}"   # NaN prints as a dash
+
+    card = ui.card().classes("w-full")
+    card.on("wheel", _wheel, ["deltaY"], throttle=0.03)
+    with card:
+        with ui.row().classes("items-center gap-2 w-full"):
+            ui.label("Inspect cached signals").classes("font-medium")
+            ui.label(f"{len(frame):,} rows · {frame.index[0].date()} to "
+                     f"{frame.index[-1].date()}").classes(MUTED)
+        with ui.row().classes("items-center gap-3 flex-wrap"):
+            ui.select(columns, value=INSPECT["column"], label="column", with_input=True,
+                      on_change=lambda e: (INSPECT.__setitem__("column", e.value),
+                                           _signal_inspector.refresh())) \
+                .props("dense options-dense").classes("min-w-[280px]")
+            moment = ui.input(label="date and time",
+                              value=stamp.strftime("%Y-%m-%d %H:%M"),
+                              on_change=lambda e: _seek(e.value)).props("dense")
+            with ui.menu().props("no-parent-event") as calendar:
+                ui.date(value=str(stamp.date()), on_change=lambda e: _set_date(e.value))
+                with ui.row().classes("justify-end"):
+                    ui.button("Close", on_click=calendar.close).props("flat")
+            with moment.add_slot("append"):
+                ui.icon("edit_calendar").on("click", calendar.open).classes("cursor-pointer")
+            ui.button(icon="arrow_upward", on_click=lambda: _step(-1)) \
+                .props("flat dense").tooltip("One minute earlier")
+            ui.button(icon="arrow_downward", on_click=lambda: _step(1)) \
+                .props("flat dense").tooltip("One minute later")
+        with ui.row().classes("items-center gap-3"):
+            ui.label(shown).classes("text-2xl font-semibold px-3 py-1 rounded") \
+                .style(f"background:{dashboard.score_colour(value)};"
+                       f"color:{dashboard.text_colour(value)}")
+            ui.label(f"{INSPECT['column']} at {stamp:%Y-%m-%d %H:%M}").classes(MUTED)
+            ui.space()
+            ui.label(f"row {position + 1:,} of {len(frame):,}").classes(MUTED)
+        ui.label("Scroll over this panel to step through the file a minute at a time.") \
+            .classes(MUTED)
+
 
 def latest_job():
     """Most recently submitted backtest, whether whole-strategy or a single block."""
