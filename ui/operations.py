@@ -211,6 +211,19 @@ def _signals_frame():
     return _SIGNALS["frame"]
 
 
+def _cache_age():
+    """(when the cached run was written, is the strategy newer than it)."""
+    from datetime import datetime
+
+    signals = app_paths.cache_dir() / "signals.csv"
+    if not signals.is_file():
+        return "never", False
+    written = signals.stat().st_mtime
+    strategy = app_paths.strategy_path()
+    newer = strategy.is_file() and strategy.stat().st_mtime > written
+    return datetime.fromtimestamp(written).strftime("%d %b %H:%M"), newer
+
+
 def _child_ids() -> list:
     """Direct children of the inspected column, per the engine's own tree."""
     from ui import dashboard
@@ -370,6 +383,14 @@ def _signal_inspector() -> None:
             ui.label("Inspect cached signals").classes("font-medium")
             ui.label(f"{len(frame):,} rows · {frame.index[0].date()} to "
                      f"{frame.index[-1].date()}").classes(MUTED)
+            written, stale = _cache_age()
+            ui.label(f"· run {written}").classes(MUTED)
+            if stale:
+                # These values were produced by an older strategy, so they can
+                # disagree with freshly rendered charts.
+                ui.badge("strategy edited since").props("color=warning") \
+                    .tooltip("config/strategy.yaml is newer than this run — "
+                             "re-run a backtest to refresh these values")
         outer = ui.row().classes("w-full gap-4 items-start no-wrap")
     with outer:
         left = ui.column().classes("grow gap-2 min-w-0")
