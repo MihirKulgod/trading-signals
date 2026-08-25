@@ -180,17 +180,25 @@ class InsufficientHistoryError(Exception):
 # legitimately has no session.
 COVERAGE_TOLERANCE = timedelta(days=4)
 
-def check_coverage(candles, start_date: date, end_date: date, trading_symbol: str) -> None:
+def check_coverage(candles, start_date: date, end_date: date, trading_symbol: str,
+                   downloaded: bool = False) -> None:
     """
-    Stop a run whose cached candles miss part of the requested range.
+    Stop a run whose candles miss part of the requested range.
 
     Silently proceeding is worse than failing: the run would report a period it
     never evaluated, and indicators would warm up from the wrong first bar.
+
+    What to do about it depends on whether a download just ran. If it did, the
+    range is all the data there is -- a futures contract listed part way through
+    the range has no earlier candles, and asking again will not conjure them.
     """
+    source = "downloaded candles" if downloaded else "cached candles"
     if candles.empty:
+        remedy = ("The instrument may not have traded in this range at all."
+                  if downloaded else "Re-run with candle download enabled.")
         raise InsufficientHistoryError(
-            f"{trading_symbol}: no cached candles at all, but {start_date}..{end_date} "
-            "was requested. Re-run with candle download enabled."
+            f"{trading_symbol}: no {source} at all, but {start_date}..{end_date} "
+            f"was requested. {remedy}"
         )
 
     first, last = candles.index[0].date(), candles.index[-1].date()
@@ -199,12 +207,20 @@ def check_coverage(candles, start_date: date, end_date: date, trading_symbol: st
         missing.append(f"starts {(first - start_date).days} days late ({first})")
     if end_date - last > COVERAGE_TOLERANCE:
         missing.append(f"ends {(end_date - last).days} days early ({last})")
-    if missing:
-        raise InsufficientHistoryError(
-            f"{trading_symbol}: cached candles cover {first}..{last}, but "
-            f"{start_date}..{end_date} was requested — {'; '.join(missing)}. "
-            "Re-run with candle download enabled, or narrow the date range."
-        )
+    if not missing:
+        return
+
+    if downloaded:
+        remedy = (f"The download already ran, so this is all the data that exists for "
+                  f"{trading_symbol} — a contract listed later has no earlier candles. "
+                  f"Either start the range at {first}, or point the instrument at the "
+                  "contract that was trading then.")
+    else:
+        remedy = "Re-run with candle download enabled, or narrow the date range."
+    raise InsufficientHistoryError(
+        f"{trading_symbol}: {source} cover {first}..{last}, but "
+        f"{start_date}..{end_date} was requested — {'; '.join(missing)}. {remedy}"
+    )
 
 def get_historical(kite: KiteConnect, instruments_info, start_date: date, end_date: date, start_time, stop_time, download_data=True, wipe_file=True, require_coverage=True):
     result = []
@@ -231,7 +247,8 @@ def get_historical(kite: KiteConnect, instruments_info, start_date: date, end_da
         # Live asks for a generous span and judges sufficiency by session count
         # instead, so a young futures contract does not abort the engine.
         if require_coverage:
-            check_coverage(candles, start_date, end_date, instrument["trading_symbol"])
+            check_coverage(candles, start_date, end_date, instrument["trading_symbol"],
+                           downloaded=download_data)
         candles = candles[(candles.index.date >= start_date) & (candles.index.date <= end_date)]
 
         instrument.pop("token")
