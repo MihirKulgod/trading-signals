@@ -1115,9 +1115,25 @@ def _commit(tab_label: str) -> bool:
         first = str(e).splitlines()[1] if "\n" in str(e) else str(e)
         ui.notify(f"{doc_key} invalid — not saved: {first}", type="negative", timeout=6000)
         return False
-    persistence.save_document(doc, PATHS[doc_key])
+    try:
+        persistence.save_document(doc, PATHS[doc_key])
+    except persistence.ExternalChangeError as e:
+        ui.notify(f"{e} Use Reload above.", type="negative", timeout=0, close_button="OK")
+        return False
     ui.notify(f"Saved {PATHS[doc_key].name}", type="positive")
     return True
+
+
+def _reload_docs() -> None:
+    """Discard the in-memory documents and read both files again."""
+    _load_docs()
+    _collapse_all()
+    for builder in _TAB_BUILDERS.values():
+        refresh = getattr(builder, "refresh", None)
+        if refresh is not None:
+            refresh()
+    _banners.refresh()
+    ui.notify("Reloaded from disk — unsaved edits discarded", type="warning")
 
 
 @ui.refreshable
@@ -1161,6 +1177,9 @@ def index() -> None:
             ui.button("Save tab", icon="save",
                       on_click=lambda: (_commit(STATE["current"]), _banners.refresh())) \
                 .props("flat color=white")
+            ui.button("Reload", icon="refresh", on_click=_reload_docs) \
+                .props("flat color=white") \
+                .tooltip("Re-read both config files, discarding unsaved edits")
 
     with ui.tabs(on_change=on_tab_change).classes("w-full") as tabs:
         for label in TAB_DOC:

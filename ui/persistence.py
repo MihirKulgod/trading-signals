@@ -18,6 +18,7 @@ So the intended flow is: ``load_document`` (raw, editable) -> validate with
 
 from __future__ import annotations
 
+import hashlib
 import io
 from pathlib import Path
 from typing import Any
@@ -49,10 +50,41 @@ def _yaml() -> YAML:
 # ---------------------------------------------------------------------------
 
 
+class ExternalChangeError(Exception):
+    """The file changed on disk after it was loaded, so saving would lose that."""
+
+
+# The digest a document was loaded from, carried on the document itself rather
+# than per path: an editor holds one copy in memory for as long as its page
+# lives, and must be judged against the file as it was when *that* copy was
+# read, not against whatever some later reader saw.
+_BASIS = "_loaded_from"
+
+
+def _key(path: str | Path) -> str:
+    return str(Path(path).resolve())
+
+
+def _fingerprint(path: str | Path) -> str | None:
+    file = Path(path)
+    if not file.is_file():
+        return None
+    return hashlib.sha256(file.read_bytes()).hexdigest()
+
+
+def _stamp(doc: Any, path: str | Path) -> None:
+    try:
+        setattr(doc, _BASIS, (_key(path), _fingerprint(path)))
+    except AttributeError:
+        pass          # a scalar or plain type cannot carry the stamp; skip the guard
+
+
 def load_document(path: str | Path) -> Any:
     """Load a YAML file as an editable, comment-preserving ruamel document."""
     with open(path, "r", encoding="utf-8") as f:
-        return _yaml().load(f)
+        doc = _yaml().load(f)
+    _stamp(doc, path)
+    return doc
 
 
 def dump_document(doc: Any) -> str:
@@ -63,9 +95,23 @@ def dump_document(doc: Any) -> str:
 
 
 def save_document(doc: Any, path: str | Path) -> None:
-    """Write a ruamel document back to disk, preserving comments/order."""
+    """
+    Write a ruamel document back to disk, preserving comments/order.
+
+    Raises ``ExternalChangeError`` if the file no longer matches what was last
+    loaded here, rather than overwriting the newer copy.
+    """
+    basis = getattr(doc, _BASIS, None)
+    # Only guard a write back to the file this document came from; writing it
+    # somewhere else is a copy, not a conflict.
+    if basis is not None and basis[0] == _key(path) and _fingerprint(path) != basis[1]:
+        raise ExternalChangeError(
+            f"{Path(path).name} was changed on disk after this page loaded it. "
+            "Saving now would discard that change — reload to pick it up."
+        )
     with open(path, "w", encoding="utf-8") as f:
         _yaml().dump(doc, f)
+    _stamp(doc, path)
 
 
 # ---------------------------------------------------------------------------

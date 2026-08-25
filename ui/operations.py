@@ -51,7 +51,11 @@ def _persist_settings() -> None:
     except Exception as e:
         ui.notify(f"settings invalid — not saved: {e}", type="negative", timeout=6000)
         return
-    persistence.save_document(doc, app_paths.settings_path())
+    try:
+        persistence.save_document(doc, app_paths.settings_path())
+    except persistence.ExternalChangeError as e:
+        ui.notify(f"{e} Use Reload in the header.", type="negative",
+                  timeout=0, close_button="OK")
 
 def backtest_options(settings) -> dict:
     """Run options as stored in settings, shared by the tab and single-block runs."""
