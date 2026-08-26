@@ -235,6 +235,24 @@ def _child_ids() -> list:
         return []
 
 
+def _parent_ids() -> list:
+    """
+    Direct parents of the inspected column: whichever nodes list it as a child.
+
+    Inverted from the same forward tree the children list uses, rather than a
+    separate lookup, so parent and child links can never disagree. A shared
+    definition can have more than one parent, so this is a list, not one id.
+    """
+    from ui import dashboard
+
+    try:
+        tree = dashboard.condition_tree(_strategy_doc())
+    except Exception:
+        return []
+    return sorted({parent for parent, children in tree.items()
+                  if INSPECT["column"] in children})
+
+
 def _paint_children() -> None:
     from ui import dashboard
 
@@ -274,6 +292,22 @@ def _paint() -> None:
         _paint_children()
     except Exception:
         _PANEL["value"] = None          # elements from a previous page build
+
+
+@ui.refreshable
+def _parents_list() -> None:
+    """The reverse of the children list: click to step up instead of down."""
+    parents = _parent_ids()
+    if not parents:
+        ui.label("top level — no parent").classes(MUTED)
+        return
+    with ui.column().classes("gap-1 w-full"):
+        for parent in parents:
+            with ui.row().classes("items-center gap-1 no-wrap cursor-pointer") \
+                    .on("click", lambda p=parent: _set_column(p)) \
+                    .tooltip(f"Inspect {parent}"):
+                ui.icon("arrow_upward").classes("text-xs")
+                ui.label(parent).classes("text-xs truncate font-medium")
 
 
 @ui.refreshable
@@ -354,6 +388,7 @@ def _set_column(column: str) -> None:
     INSPECT["column"] = column
     if _PANEL.get("select") is not None:
         _PANEL["select"].set_value(column)   # keep the picker in step when a child is clicked
+    _parents_list.refresh()
     _children_list.refresh()
     _paint()
 
@@ -426,6 +461,8 @@ def _signal_inspector() -> None:
         ui.label("Scroll over this panel to step through the file a minute at a time.") \
             .classes(MUTED)
     with right:
+        _parents_list()
+        ui.separator()
         _children_list()
 
     _PANEL.update(value=value, caption=caption, counter=counter, moment=moment,
