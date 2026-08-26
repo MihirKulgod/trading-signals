@@ -150,7 +150,7 @@ def chart_name(timestamp, minutes: int, blocker) -> str:
         return f"{timestamp.date()} blocked by {blocker[0]}"
     return f"{timestamp.date()}"
 
-def render_day_charts(settings, instruments_data, df, children_map, days):
+def render_day_charts(settings, instruments_data, df, children_map, days, progress=None):
     display = settings["display"]
     output_timeframe = display["timeframe"]
     signal_aggregates = display["signal_aggregates"]
@@ -178,7 +178,12 @@ def render_day_charts(settings, instruments_data, df, children_map, days):
         save_active_windows(condition_id, windows.get(condition_id, {}))
 
     tasks = [(c, t) for c in days for t in days[c]]
-    for condition_col, timestamp in tqdm(tasks, desc="[Visualizing]"):
+    for done, (condition_col, timestamp) in enumerate(tqdm(tasks, desc="[Visualizing]")):
+        if progress is not None:
+            # Also the cancellation point for this stage: report raises once a
+            # stop has been asked for.
+            progress(done / len(tasks) if tasks else 1.0,
+                     f"rendering chart {done + 1}/{len(tasks)}")
         examine_condition(
             display["examination_window"],
             condition_col,
@@ -212,13 +217,19 @@ def run_backtest(config, settings, start_date: date, end_date: date,
     selected = report_selection(config, only)
     kite = get_kite()
 
+    def stage(message):
+        if progress is not None:
+            progress(0.0, message)
+
+    stage("fetching candles")
     instruments_info = parse_instruments(kite, config)
     instruments_data = get_historical(
         kite, instruments_info, start_date, end_date,
         SESSION_START, SESSION_END, download_data,
     )
 
-    generate_base(config, instruments_data)
+    stage("building indicators")
+    generate_base(config, instruments_data, progress=progress)
 
     if reuse_signals:
         print("Reading cached signal values..")
@@ -235,6 +246,7 @@ def run_backtest(config, settings, start_date: date, end_date: date,
                   "Re-run without --reuse-signals for coherent results.")
     else:
         reset_reference_warnings()
+        stage("evaluating signals")
         df, condition_cols, children_map = generate_signals(config, instruments_data, only, progress)
         if merge_block is not None:
             print(f"Merging {merge_block} into the cached signal values..")
@@ -251,8 +263,12 @@ def run_backtest(config, settings, start_date: date, end_date: date,
     if visualize:
         # chart_valid_days draws every session the condition was evaluated, not
         # just the ones it fired on, so a single block can be reviewed over time.
+        stage("rendering charts")
         charted = find_valid_days(df, chart_cols) if chart_valid_days else days
-        render_day_charts(settings, instruments_data, df, children_map, charted)
+        render_day_charts(settings, instruments_data, df, children_map, charted, progress)
+
+    if progress is not None:
+        progress(1.0, "done")
 
     return df, condition_cols, children_map, days
 

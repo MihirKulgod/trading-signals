@@ -439,10 +439,18 @@ def latest_job():
     jobs = [j for name, j in RUNNER.all().items() if name.startswith(BACKTEST_JOB)]
     return max(jobs, key=lambda job: job.sequence) if jobs else None
 
+def running_backtest():
+    """Any backtest in flight, whole-strategy or a single block."""
+    for job in RUNNER.all().values():
+        if job.name.startswith(BACKTEST_JOB) and not job.finished:
+            return job
+    return None
+
 def _start_backtest() -> None:
-    job = RUNNER.get(BACKTEST_JOB)
-    if job is not None and not job.finished:
-        ui.notify("A backtest is already running", type="warning")
+    # Runs share the output folder and the signal cache, so only one at a time.
+    busy = running_backtest()
+    if busy is not None:
+        ui.notify(f"{busy.name} is still running", type="warning")
         return
     _persist_settings()
     RUNNER.submit(BACKTEST_JOB, _run_backtest_job())
@@ -450,12 +458,16 @@ def _start_backtest() -> None:
     _backtest_status.refresh()
 
 def _cancel_backtest() -> None:
-    job = RUNNER.get(BACKTEST_JOB)
+    # Cancels whatever the panel is showing, so a single-block run can be
+    # stopped as readily as a whole-strategy one.
+    job = latest_job()
+    if job is None or job.finished:
+        job = running_backtest()
     if job is None or job.finished:
         ui.notify("No backtest running", type="warning")
         return
     job.cancel()
-    ui.notify("Cancelling after the current candle…")
+    ui.notify(f"Cancelling {job.name}…")
 
 @ui.refreshable
 def _backtest_status() -> None:

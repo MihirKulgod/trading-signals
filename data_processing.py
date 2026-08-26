@@ -150,7 +150,7 @@ def build_developing_frame(candles_1m_days, minutes: int, strategy, completed,
     return pd.DataFrame(rows, index=pd.DatetimeIndex(index))
 
 def build_timeframes(config, instruments_data, candles_for, progress_label="Processing",
-                     developing_history=True):
+                     developing_history=True, progress=None):
     """
     Builds the completed frame per timeframe, plus a developing frame where configured.
 
@@ -182,14 +182,19 @@ def build_timeframes(config, instruments_data, candles_for, progress_label="Proc
                         latest_only=not developing_history)
 
                 pbar.update(1)
+                if progress is not None:
+                    progress(pbar.n / len(tasks) if tasks else 1.0,
+                             f"building indicators {pbar.n}/{len(tasks)}"
+                             f" ({instrument['trading_symbol']}/{tf})")
 
             instrument["timeframes"]["intraday"] = completed
             instrument["developing"] = {"intraday": developing}
 
-def generate_base(config, instruments_data):
+def generate_base(config, instruments_data, progress=None):
     """Generates data for all the timeframes specified and applies the strategy to generate initial indicators"""
     build_timeframes(config, instruments_data,
-                     lambda instrument: bracket_by_day(instrument["candles"]))
+                     lambda instrument: bracket_by_day(instrument["candles"]),
+                     progress=progress)
 
 def generate_base_window(config, instruments_data, window_days: int):
     """Rebuilds the live frames; the developing candle is only needed for now."""
