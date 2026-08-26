@@ -29,6 +29,7 @@ SIGNAL_CACHE_PATH = CACHE_DIR / "signals.csv"
 CONDITION_COLS_CACHE_PATH = CACHE_DIR / "condition_cols.yaml"
 CHILDREN_MAP_CACHE_PATH = CACHE_DIR / "children_map.yaml"
 PATCHED_BLOCKS_PATH = CACHE_DIR / "patched_blocks.yaml"
+INDICATOR_CACHE_DIR = CACHE_DIR / "indicators"
 
 OUTPUT_DIR = app_paths.output_dir()
 
@@ -97,6 +98,26 @@ def merge_cached_signals(df, children_map, block_id):
     with open(PATCHED_BLOCKS_PATH, 'w') as f:
         yaml.safe_dump(patched, f, default_flow_style=False)
     return f"merged {len(df.columns)} column(s)"
+
+def indicator_cache_path(instrument_id: str, timeframe: str):
+    return INDICATOR_CACHE_DIR / f"{instrument_id}__{timeframe}.csv"
+
+def save_cached_indicators(instruments_data) -> None:
+    """
+    Persist each instrument/timeframe's completed frame -- close, EMAs, MACD,
+    RSI, ATR, whatever the ``ta:`` list produces -- so they can be browsed
+    without holding a live engine instance.
+
+    Unlike the signal cache this has no notion of "selected conditions": every
+    column here comes from generate_base, which runs the same way regardless
+    of which conditions are active. A single-block run therefore refreshes
+    these exactly as completely as a whole-strategy run, and needs no merge.
+    """
+    INDICATOR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    for instrument in instruments_data:
+        for timeframe, df in instrument["timeframes"]["intraday"].items():
+            df.to_csv(indicator_cache_path(instrument["id"], timeframe),
+                     index=True, sep=',', encoding="utf-8")
 
 def tier_columns(df, condition_cols, children_map):
     """Direct children of each top-level condition (the tiers of a sequential)."""
@@ -230,6 +251,7 @@ def run_backtest(config, settings, start_date: date, end_date: date,
 
     stage("building indicators")
     generate_base(config, instruments_data, progress=progress)
+    save_cached_indicators(instruments_data)
 
     if reuse_signals:
         print("Reading cached signal values..")

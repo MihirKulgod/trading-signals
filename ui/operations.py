@@ -178,6 +178,7 @@ def backtest_tab() -> None:
 
     _backtest_status()
     _signal_inspector()
+    _indicator_inspector()
 
 # --- cached-signal inspector -----------------------------------------------
 
@@ -469,6 +470,220 @@ def _signal_inspector() -> None:
                   select=select)
     INSPECT["residual"] = 0.0
     _paint()
+
+
+# --- cached-indicator inspector ---------------------------------------------
+
+# One cached frame per (instrument, timeframe), each independently kept until
+# its file's mtime/size changes -- the same rule _signals_frame uses.
+_INDICATOR_FRAMES: dict = {}
+INSPECT_IND: dict = {"instrument": None, "timeframe": None, "column": None,
+                     "position": None, "residual": 0.0}
+_PANEL_IND: dict = {"value": None, "caption": None, "counter": None, "moment": None,
+                    "select": None}
+
+
+def _indicator_dir():
+    return app_paths.cache_dir() / "indicators"
+
+
+def _indicator_combos() -> list:
+    """(instrument_id, timeframe) pairs with a cached frame, for the pickers."""
+    directory = _indicator_dir()
+    if not directory.is_dir():
+        return []
+    combos = []
+    for path in directory.glob("*__*.csv"):
+        instrument_id, _, timeframe = path.stem.partition("__")
+        combos.append((instrument_id, timeframe))
+    return sorted(combos)
+
+
+def _indicator_frame(instrument_id: str, timeframe: str):
+    import pandas as pd
+
+    path = _indicator_dir() / f"{instrument_id}__{timeframe}.csv"
+    if not path.is_file():
+        return None
+    stat = path.stat()
+    key = (stat.st_mtime_ns, stat.st_size)
+    cached = _INDICATOR_FRAMES.get((instrument_id, timeframe))
+    if cached is None or cached["key"] != key:
+        cached = {"key": key, "frame": pd.read_csv(path, index_col="datetime", parse_dates=True)}
+        _INDICATOR_FRAMES[(instrument_id, timeframe)] = cached
+    return cached["frame"]
+
+
+def _current_indicator_frame():
+    if not INSPECT_IND["instrument"] or not INSPECT_IND["timeframe"]:
+        return None
+    return _indicator_frame(INSPECT_IND["instrument"], INSPECT_IND["timeframe"])
+
+
+def _indicator_paint() -> None:
+    """Write the current row onto the existing elements."""
+    frame = _current_indicator_frame()
+    if frame is None or _PANEL_IND["value"] is None:
+        return
+    position = INSPECT_IND["position"]
+    stamp = frame.index[position]
+    value = frame[INSPECT_IND["column"]].iloc[position]
+    try:
+        _PANEL_IND["value"].set_text("—" if value != value else f"{value:,.4f}")
+        _PANEL_IND["caption"].set_text(f"{INSPECT_IND['column']} at {stamp:%Y-%m-%d %H:%M}")
+        _PANEL_IND["counter"].set_text(f"row {position + 1:,} of {len(frame):,}")
+        _PANEL_IND["moment"].set_value(stamp.strftime("%Y-%m-%d %H:%M"))
+    except Exception:
+        _PANEL_IND["value"] = None       # elements from a previous page build
+
+
+def _indicator_step(rows: int) -> None:
+    frame = _current_indicator_frame()
+    if frame is None:
+        return
+    position = max(0, min(len(frame) - 1, (INSPECT_IND["position"] or 0) + rows))
+    if position == INSPECT_IND["position"]:
+        return
+    INSPECT_IND["position"] = position
+    _indicator_paint()
+
+
+def _indicator_wheel(event) -> None:
+    delta = (event.args or {}).get("deltaY") or 0
+    if abs(delta) >= WHEEL_DETENT:                   # a mouse click of the wheel
+        INSPECT_IND["residual"] = 0.0
+        _indicator_step(-1 if delta > 0 else 1)      # scrolling down goes back in time
+        return
+    INSPECT_IND["residual"] += delta
+    steps = int(INSPECT_IND["residual"] / WHEEL_NOTCH)
+    if not steps:
+        return
+    INSPECT_IND["residual"] -= steps * WHEEL_NOTCH
+    _indicator_step(-steps)
+
+
+def _indicator_seek(text: str) -> None:
+    """Jump to a typed moment. Only called on Enter or blur, never mid-edit."""
+    import pandas as pd
+
+    frame = _current_indicator_frame()
+    if frame is None or not str(text).strip():
+        return
+    try:
+        wanted = pd.Timestamp(str(text).strip())
+    except ValueError:
+        ui.notify(f"Could not read {text!r} as a date and time", type="warning")
+        _indicator_paint()
+        return
+    INSPECT_IND["position"] = int(frame.index.get_indexer([wanted], method="nearest")[0])
+    _indicator_paint()
+
+
+def _indicator_set_date(date_text: str) -> None:
+    frame = _current_indicator_frame()
+    if frame is None or not date_text:
+        return
+    current = frame.index[INSPECT_IND["position"] or 0]
+    _indicator_seek(f"{date_text} {current.strftime('%H:%M')}")
+
+
+def _indicator_set_column(column: str) -> None:
+    if not column or column == INSPECT_IND["column"]:
+        return
+    INSPECT_IND["column"] = column
+    _indicator_paint()
+
+
+def _indicator_set_combo(instrument_id: str, timeframe: str) -> None:
+    """Switching instrument or timeframe swaps the whole frame, so the column
+    list and row count both need rebuilding, not just repainting."""
+    if (instrument_id, timeframe) == (INSPECT_IND["instrument"], INSPECT_IND["timeframe"]):
+        return
+    INSPECT_IND["instrument"] = instrument_id
+    INSPECT_IND["timeframe"] = timeframe
+    INSPECT_IND["column"] = None
+    INSPECT_IND["position"] = None
+    _indicator_inspector.refresh()
+
+
+@ui.refreshable
+def _indicator_inspector() -> None:
+    combos = _indicator_combos()
+    if not combos:
+        ui.label("No cached indicators — run a backtest to populate this.").classes(MUTED)
+        return
+
+    if (INSPECT_IND["instrument"], INSPECT_IND["timeframe"]) not in combos:
+        INSPECT_IND["instrument"], INSPECT_IND["timeframe"] = combos[0]
+
+    frame = _current_indicator_frame()
+    if frame is None or not len(frame.columns) or not len(frame):
+        ui.label("Cached indicator file is empty.").classes(MUTED)
+        return
+
+    columns = list(frame.columns)
+    if INSPECT_IND["column"] not in columns:
+        INSPECT_IND["column"] = columns[0]
+    if INSPECT_IND["position"] is None:
+        INSPECT_IND["position"] = len(frame) - 1
+    INSPECT_IND["position"] = max(0, min(len(frame) - 1, INSPECT_IND["position"]))
+    stamp = frame.index[INSPECT_IND["position"]]
+
+    instruments = sorted({i for i, _ in combos})
+    timeframes = sorted({tf for i, tf in combos if i == INSPECT_IND["instrument"]},
+                        key=lambda t: int(t[:-3]) if t.endswith("min") else t)
+
+    card = ui.card().classes("w-full")
+    card.on("wheel", _indicator_wheel, ["deltaY"])   # unthrottled, as with signals
+    with card:
+        with ui.row().classes("items-center gap-2 w-full"):
+            ui.label("Inspect cached indicators").classes("font-medium")
+            ui.label(f"{len(frame):,} rows · {frame.index[0].date()} to "
+                     f"{frame.index[-1].date()}").classes(MUTED)
+
+        with ui.row().classes("items-center gap-3 flex-wrap"):
+            ui.select(instruments, value=INSPECT_IND["instrument"], label="instrument",
+                      on_change=lambda e: _indicator_set_combo(
+                          e.value, next(tf for i, tf in combos if i == e.value))) \
+                .props("dense options-dense").classes("min-w-[140px]")
+            ui.select(timeframes, value=INSPECT_IND["timeframe"], label="timeframe",
+                      on_change=lambda e: _indicator_set_combo(
+                          INSPECT_IND["instrument"], e.value)) \
+                .props("dense options-dense").classes("min-w-[100px]")
+            select = ui.select(columns, value=INSPECT_IND["column"], label="column",
+                               with_input=True,
+                               on_change=lambda e: _indicator_set_column(e.value)) \
+                .props("dense options-dense").classes("min-w-[200px]")
+            # Committed on Enter or on leaving the field, same as the signal
+            # inspector -- validating per keystroke breaks a half-typed time.
+            moment = ui.input(label="date and time",
+                              value=stamp.strftime("%Y-%m-%d %H:%M")).props("dense")
+            moment.on("keydown.enter", lambda: _indicator_seek(moment.value))
+            moment.on("blur", lambda: _indicator_seek(moment.value))
+            with ui.menu().props("no-parent-event") as calendar:
+                ui.date(value=str(stamp.date()),
+                       on_change=lambda e: _indicator_set_date(e.value))
+                with ui.row().classes("justify-end"):
+                    ui.button("Close", on_click=calendar.close).props("flat")
+            with moment.add_slot("append"):
+                ui.icon("edit_calendar").on("click", calendar.open).classes("cursor-pointer")
+            ui.button(icon="arrow_upward", on_click=lambda: _indicator_step(1)) \
+                .props("flat dense").tooltip("One row later")
+            ui.button(icon="arrow_downward", on_click=lambda: _indicator_step(-1)) \
+                .props("flat dense").tooltip("One row earlier")
+        with ui.row().classes("items-center gap-3 w-full"):
+            value = ui.label("").classes(
+                "text-2xl font-semibold px-3 py-1 rounded bg-gray-100 text-gray-900")
+            caption = ui.label("").classes(MUTED)
+            ui.space()
+            counter = ui.label("").classes(MUTED)
+        ui.label("Scroll over this panel to step through the file a row at a time.") \
+            .classes(MUTED)
+
+    _PANEL_IND.update(value=value, caption=caption, counter=counter, moment=moment,
+                      select=select)
+    INSPECT_IND["residual"] = 0.0
+    _indicator_paint()
 
 
 def latest_job():
