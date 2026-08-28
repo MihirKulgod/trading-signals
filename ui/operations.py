@@ -199,6 +199,16 @@ WHEEL_DETENT = 50.0
 WHEEL_NOTCH = 40.0
 
 
+def _keep_wheel(card) -> None:
+    """
+    Stop a wheel over an inspector from scrolling the page as well as stepping
+    through time. A second, client-only listener so the server still receives
+    every delta; preventDefault works here because the element is not one of
+    the roots browsers force wheel listeners to be passive on.
+    """
+    card.on("wheel", js_handler="(e) => e.preventDefault()")
+
+
 def _signals_frame():
     import pandas as pd
 
@@ -415,6 +425,7 @@ def _signal_inspector() -> None:
 
     card = ui.card().classes("w-full")
     card.on("wheel", _wheel, ["deltaY"])   # unthrottled: a dropped event loses its delta
+    _keep_wheel(card)
     with card:
         with ui.row().classes("items-center gap-2 w-full"):
             ui.label("Inspect cached signals").classes("font-medium")
@@ -635,6 +646,7 @@ def _indicator_inspector() -> None:
 
     card = ui.card().classes("w-full")
     card.on("wheel", _indicator_wheel, ["deltaY"])   # unthrottled, as with signals
+    _keep_wheel(card)
     with card:
         with ui.row().classes("items-center gap-2 w-full"):
             ui.label("Inspect cached indicators").classes("font-medium")
