@@ -20,7 +20,9 @@ from nicegui import ui
 from pydantic import ValidationError
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
+import app_paths
 import condition
+import description
 from ui import operations, persistence, vocabulary
 
 MUTED = "text-sm text-gray-500"
@@ -599,6 +601,34 @@ def _run_condition(node: CommentedMap) -> None:
     ui.notify(f"Backtesting {node_id} — see Run · Backtest for progress")
 
 
+def _show_description(node: CommentedMap) -> None:
+    text = description.describe_block(node, DOCS["strategy"])
+    with ui.dialog() as dialog, ui.card().classes("w-[950px] max-w-[95vw]"):
+        with ui.row().classes("items-center gap-2 w-full"):
+            ui.label(f"Description — {description.readable_id(node.get('id'))}") \
+                .classes("font-medium")
+            ui.space()
+            ui.button(icon="close", on_click=dialog.close).props("flat dense")
+        ui.label("References are named, not expanded; export the strategy to read them.") \
+            .classes(MUTED)
+        with ui.element("div").classes("w-full overflow-auto").style("max-height:70vh"):
+            # Rules run long; wrap them instead of clipping off the right edge.
+            ui.code(text, language=None).classes("w-full description-text")
+    dialog.open()
+
+
+def _export_description() -> None:
+    """Write the whole strategy out as prose, definitions first."""
+    path = app_paths.output_dir() / "strategy_description.txt"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(description.describe_strategy(DOCS["strategy"]), encoding="utf-8")
+    except OSError as error:
+        ui.notify(f"Could not write {path}: {error}", type="negative", timeout=8000)
+        return
+    ui.notify(f"Exported to {path}")
+
+
 def _reverse_condition(node: CommentedMap) -> None:
     """Flip a block's directional meaning in place (Up <-> Down trade)."""
     definitions = DOCS["strategy"].setdefault("definitions", CommentedSeq())
@@ -1017,6 +1047,8 @@ def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabl
                               "Paste as child")
             ui.button(icon="account_tree", on_click=lambda n=node: _show_structure(n)) \
                 .props("flat dense").tooltip("View this block's full structure")
+            ui.button(icon="notes", on_click=lambda n=node: _show_description(n)) \
+                .props("flat dense").tooltip("Describe this block in plain English")
             ui.button(icon="swap_vert", on_click=lambda n=node: _reverse_condition(n)) \
                 .props("flat dense").tooltip("Reverse: flip this block's Up/Down trade logic in place")
             ui.button(icon="play_arrow", on_click=lambda n=node: _run_condition(n)) \
@@ -1164,6 +1196,9 @@ def _banners() -> None:
 
 @ui.page("/")
 def index() -> None:
+    # Rules run long, and ui.code renders a <pre> that would otherwise clip
+    # them; Tailwind's arbitrary variants can't reach it in a prebuilt sheet.
+    ui.add_css(".description-text pre { white-space: pre-wrap; word-break: break-word; }")
     _load_docs()
     _collapse_all()
     STATE["current"] = "Settings · Display"
@@ -1196,6 +1231,9 @@ def index() -> None:
             ui.button("Reload", icon="refresh", on_click=_reload_docs) \
                 .props("flat color=white") \
                 .tooltip("Re-read both config files, discarding unsaved edits")
+            ui.button("Export description", icon="description", on_click=_export_description) \
+                .props("flat color=white") \
+                .tooltip("Write the whole strategy to output/strategy_description.txt")
 
     with ui.tabs(on_change=on_tab_change).classes("w-full") as tabs:
         for label in TAB_DOC:
