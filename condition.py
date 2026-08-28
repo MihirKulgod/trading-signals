@@ -1,4 +1,5 @@
 import sys
+import copy
 import math
 import pandas as pd
 import importlib.metadata # pandas-ta-openbb has a bug, requiring this to be imported first 
@@ -654,3 +655,185 @@ def build_condition(spec: dict, definitions: DefinitionResolver = None) -> Condi
         if arg.kind == "operand" and arg.name in args:
             args[arg.name] = build_operand(args[arg.name], definitions)
     return registry_entry.cls(id, **args)
+
+# ---------------------------------------------------------------------------
+# Directional reversal
+#
+# Flips a raw condition spec (the same dict shape used in strategy.yaml,
+# before build_condition turns it into a Condition) from an Up-trade reading
+# to a Down-trade one, or back. Operates on specs directly and mutates them
+# in place, since the config editor works on the raw YAML document.
+#
+# Id convention: an 'up'/'down' hyphen-token in an id swaps to the other; an
+# id with neither gets '-reversed' appended (or stripped, if already
+# present). This makes repeated reversal idempotent and lets a reversed ref
+# target be found (or created once) by name alone.
+# ---------------------------------------------------------------------------
+
+_DIRECTION_TOKENS = {"up": "down", "down": "up"}
+
+def reverse_id(node_id: str) -> str:
+    tokens = node_id.split("-")
+    for i, token in enumerate(tokens):
+        if token in _DIRECTION_TOKENS:
+            tokens[i] = _DIRECTION_TOKENS[token]
+            return "-".join(tokens)
+    if tokens and tokens[-1] == "reversed":
+        return "-".join(tokens[:-1])
+    return f"{node_id}-reversed"
+
+class UnsupportedReversalError(ValueError):
+    def __init__(self, cond_type, node_id):
+        super().__init__(f"don't know how to reverse condition type {cond_type!r} (id={node_id!r})")
+        self.cond_type, self.node_id = cond_type, node_id
+
+def _find_definition_spec(definitions: list, target: str):
+    for definition in definitions:
+        if definition.get("id") == target:
+            return definition
+    return None
+
+def _is_literal_value(operand) -> bool:
+    return isinstance(operand, dict) and operand.get("type") == "value"
+
+def _is_rsi_operand(operand) -> bool:
+    return isinstance(operand, dict) and operand.get("col_name") == "rsi"
+
+def _is_session_minute(operand) -> bool:
+    return (isinstance(operand, dict) and operand.get("type") == "condition"
+            and isinstance(operand.get("input"), dict)
+            and operand["input"].get("condition") == "session_minute")
+
+def _nested_condition(operand):
+    if isinstance(operand, dict) and operand.get("type") == "condition":
+        return operand.get("input")
+    return None
+
+# Combinator arg lists are shaped [{condition, id, args}, ...] rather than
+# following an ArgSpec("kind"="operand") entry, so and/or/sequential/not are
+# special-cased; everything else is walked generically off CONDITION_REGISTRY.
+def _condition_children(spec: dict) -> list:
+    """Every nested raw condition spec directly inside `spec`."""
+    cond_type = spec.get("condition")
+    if cond_type in ("and", "or", "sequential", "not"):
+        return list(spec.get("args") or [])
+    entry = CONDITION_REGISTRY.get(cond_type)
+    if entry is None:
+        return []
+    args = spec.get("args") or {}
+    children = []
+    for arg in entry.args:
+        if arg.kind == "condition":
+            child = args.get(arg.name)
+            if child is not None:
+                children.append(child)
+        elif arg.kind in ("operand", "reference", "candle_reference"):
+            nested = _nested_condition(args.get(arg.name))
+            if nested is not None:
+                children.append(nested)
+    return children
+
+def is_time_gate(spec: dict, definitions: list, seen: frozenset = frozenset()) -> bool:
+    """A clock-based (non-directional) leaf: session_minute vs. a fixed minute."""
+    cond_type = spec.get("condition")
+    if cond_type == "session_minute":
+        return True
+    if cond_type == "ref":
+        target = (spec.get("args") or {}).get("target")
+        if target is None or target in seen:
+            return False
+        definition = _find_definition_spec(definitions, target)
+        return definition is not None and is_time_gate(definition, definitions, seen | {target})
+    if cond_type in ("above", "below"):
+        args = spec.get("args") or {}
+        return _is_session_minute(args.get("a")) or _is_session_minute(args.get("b"))
+    return False
+
+# Types with no inherent up/down meaning of their own; reversal only needs to
+# recurse into whatever they wrap (a combinator's children, a window's input,
+# a kernel/multiply/boost's nested condition). candle_body has no direction
+# either -- the wrapping above/below + its literal threshold carries that.
+_STRUCTURAL_TYPES = {
+    "and", "or", "not", "sequential", "exists_in_window", "for_all_in_window",
+    "kernel", "multiply", "boost", "session_minute", "candle_body",
+}
+
+def reverse_spec(spec: dict, definitions: list) -> None:
+    """Flip `spec`'s directional meaning in place (Up <-> Down). `definitions`
+    is the live (mutable) definitions list, used to look up or create a
+    reversed counterpart for any 'ref' encountered."""
+    if is_time_gate(spec, definitions):
+        return
+
+    cond_type = spec.get("condition")
+    spec["id"] = reverse_id(spec.get("id", ""))
+
+    if cond_type == "ref":
+        target = spec["args"]["target"]
+        mirror = reverse_id(target)
+        if _find_definition_spec(definitions, mirror) is None:
+            original = _find_definition_spec(definitions, target)
+            if original is None:
+                raise DefinitionNotFoundError(target)
+            duplicate = copy.deepcopy(original)
+            definitions.append(duplicate)
+            reverse_spec(duplicate, definitions)
+        spec["args"]["target"] = mirror
+        return
+
+    if cond_type in ("above", "below"):
+        args = spec["args"]
+        a, b = args.get("a"), args.get("b")
+        inner_a, inner_b = _nested_condition(a), _nested_condition(b)
+        # A wick's magnitude threshold doesn't flip -- only which side of the
+        # candle it measures does, so this bypasses the outer swap entirely.
+        wick = inner_a if (inner_a or {}).get("condition") == "candle_wick" else \
+               inner_b if (inner_b or {}).get("condition") == "candle_wick" else None
+        if wick is not None:
+            reverse_spec(wick, definitions)
+            return
+        spec["condition"] = "below" if cond_type == "above" else "above"
+        if _is_rsi_operand(a) and _is_literal_value(b):
+            b["value"] = 100.0 - float(b["value"])
+        elif _is_rsi_operand(b) and _is_literal_value(a):
+            a["value"] = 100.0 - float(a["value"])
+        elif _is_literal_value(b):
+            b["value"] = -float(b["value"])
+        elif _is_literal_value(a):
+            a["value"] = -float(a["value"])
+        if inner_a is not None:
+            reverse_spec(inner_a, definitions)
+        if inner_b is not None:
+            reverse_spec(inner_b, definitions)
+        return
+
+    if cond_type == "compare":
+        args = spec["args"]
+        if args.get("direction") in ("<", ">"):
+            args["direction"] = ">" if args["direction"] == "<" else "<"
+        if "x" in args:
+            args["x"] = -float(args["x"])
+        for key in ("a", "b", "c"):
+            inner = _nested_condition(args.get(key))
+            if inner is not None:
+                reverse_spec(inner, definitions)
+        return
+
+    if cond_type == "candle_wick":
+        side = spec["args"].get("side")
+        if side == "upper":
+            spec["args"]["side"] = "lower"
+        elif side == "lower":
+            spec["args"]["side"] = "upper"
+        return
+
+    if cond_type in ("increasing", "decreasing"):
+        spec["condition"] = "decreasing" if cond_type == "increasing" else "increasing"
+        return
+
+    if cond_type in _STRUCTURAL_TYPES:
+        for child in _condition_children(spec):
+            reverse_spec(child, definitions)
+        return
+
+    raise UnsupportedReversalError(cond_type, spec.get("id"))

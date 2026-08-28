@@ -20,6 +20,7 @@ from nicegui import ui
 from pydantic import ValidationError
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
+import condition
 from ui import operations, persistence, vocabulary
 
 MUTED = "text-sm text-gray-500"
@@ -598,6 +599,19 @@ def _run_condition(node: CommentedMap) -> None:
     ui.notify(f"Backtesting {node_id} — see Run · Backtest for progress")
 
 
+def _reverse_condition(node: CommentedMap) -> None:
+    """Flip a block's directional meaning in place (Up <-> Down trade)."""
+    definitions = DOCS["strategy"].setdefault("definitions", CommentedSeq())
+    old_id = node.get("id")
+    try:
+        condition.reverse_spec(node, definitions)
+    except (condition.UnsupportedReversalError, condition.DefinitionNotFoundError) as error:
+        ui.notify(f"Could not reverse {old_id}: {error}", type="negative", timeout=8000)
+        return
+    ui.notify(f"Reversed {old_id} -> {node['id']}")
+    _refresh_editors()
+
+
 def _copy_condition(node: CommentedMap) -> None:
     STATE["clipboard"] = copy.deepcopy(node)
     ui.notify("Condition copied")
@@ -1003,6 +1017,8 @@ def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabl
                               "Paste as child")
             ui.button(icon="account_tree", on_click=lambda n=node: _show_structure(n)) \
                 .props("flat dense").tooltip("View this block's full structure")
+            ui.button(icon="swap_vert", on_click=lambda n=node: _reverse_condition(n)) \
+                .props("flat dense").tooltip("Reverse: flip this block's Up/Down trade logic in place")
             ui.button(icon="play_arrow", on_click=lambda n=node: _run_condition(n)) \
                 .props("flat dense").tooltip("Backtest this block on its own")
             ui.button(icon="content_copy", on_click=lambda n=node: _copy_condition(n)) \
