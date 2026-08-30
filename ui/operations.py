@@ -415,7 +415,7 @@ def _signal_inspector() -> None:
         ui.label("Cached signals file is empty.").classes(MUTED)
         return
 
-    columns = list(frame.columns)
+    columns = sorted(frame.columns)
     if INSPECT["column"] not in columns:
         INSPECT["column"] = columns[0]
     if INSPECT["position"] is None:
@@ -632,7 +632,7 @@ def _indicator_inspector() -> None:
         ui.label("Cached indicator file is empty.").classes(MUTED)
         return
 
-    columns = list(frame.columns)
+    columns = sorted(frame.columns)
     if INSPECT_IND["column"] not in columns:
         INSPECT_IND["column"] = columns[0]
     if INSPECT_IND["position"] is None:
