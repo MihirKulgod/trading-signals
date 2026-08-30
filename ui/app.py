@@ -14,6 +14,8 @@ editable is step 4.
 from __future__ import annotations
 
 import copy
+import tempfile
+from pathlib import Path
 from typing import Any, Callable
 
 from nicegui import ui
@@ -1183,16 +1185,80 @@ def _commit(tab_label: str) -> bool:
     return True
 
 
-def _reload_docs() -> None:
-    """Discard the in-memory documents and read both files again."""
-    _load_docs()
+def _refresh_all_tabs() -> None:
     _collapse_all()
     for builder in _TAB_BUILDERS.values():
         refresh = getattr(builder, "refresh", None)
         if refresh is not None:
             refresh()
     _banners.refresh()
+
+
+def _reload_docs() -> None:
+    """Discard the in-memory documents and read both files again."""
+    _load_docs()
+    _refresh_all_tabs()
     ui.notify("Reloaded from disk — unsaved edits discarded", type="warning")
+
+
+def _export_document(doc_key: str) -> None:
+    ui.download(PATHS[doc_key], filename=PATHS[doc_key].name)
+
+
+async def _import_document(doc_key: str, event) -> None:
+    """Replace strategy.yaml/settings.yaml with an uploaded file, provided it
+    would still validate -- a bad import is rejected before anything on disk
+    changes."""
+    text = await event.file.text()
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8") as tmp:
+        tmp.write(text)
+        tmp_path = Path(tmp.name)
+    try:
+        VALIDATORS[doc_key](persistence.load_document(tmp_path))
+    except Exception as error:
+        ui.notify(f"Not imported — would make {PATHS[doc_key].name} invalid: {error}",
+                  type="negative", timeout=8000)
+        return
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    PATHS[doc_key].write_text(text, encoding="utf-8")
+    _load_docs()
+    _refresh_all_tabs()
+    ui.notify(f"Imported {PATHS[doc_key].name}")
+
+
+# QUploader has no prop for this -- its header always shows a byte/percent
+# subtitle even at rest, which dwarfs a plain "Export" button beside it.
+_IMPORT_EXPORT_CSS = """
+.import-upload.q-uploader { min-height: 0 !important; }
+.import-upload .q-uploader__header { min-height: 0 !important; padding: 4px 12px !important; }
+.import-upload .q-uploader__subtitle { display: none !important; }
+.import-upload .q-uploader__header-content .q-btn {
+  min-height: 24px !important; min-width: 24px !important; padding: 0 !important;
+}
+.import-upload .q-uploader__header-content .q-btn .q-icon { font-size: 18px !important; }
+.import-upload .q-uploader__title { font-size: 0.8rem !important; line-height: 1.5 !important; }
+"""
+
+
+def _show_import_export() -> None:
+    with ui.dialog() as dialog, ui.card():
+        ui.label("Import / export config files").classes("font-medium")
+        ui.label("Export gives you the file as currently saved on disk. "
+                  "Import replaces it immediately if the upload is valid.").classes(MUTED)
+        for doc_key, label in (("strategy", "Strategy"), ("settings", "Settings")):
+            with ui.row().classes("items-center gap-3 w-full no-wrap"):
+                ui.label(label).classes("w-20 shrink-0")
+                ui.button("Export", icon="download",
+                          on_click=lambda k=doc_key: _export_document(k)) \
+                    .props("outline dense no-caps").classes("shrink-0")
+                ui.upload(on_upload=lambda e, k=doc_key: _import_document(k, e),
+                         auto_upload=True, label="Import") \
+                    .props("flat borderless dense no-caps hide-upload-btn accept=.yaml,.yml") \
+                    .classes("shrink-0 import-upload").style("width:160px")
+        with ui.row().classes("justify-end w-full"):
+            ui.button("Close", on_click=dialog.close).props("flat")
+    dialog.open()
 
 
 @ui.refreshable
@@ -1210,6 +1276,7 @@ def index() -> None:
     # Rules run long, and ui.code renders a <pre> that would otherwise clip
     # them; Tailwind's arbitrary variants can't reach it in a prebuilt sheet.
     ui.add_css(".description-text pre { white-space: pre-wrap; word-break: break-word; }")
+    ui.add_css(_IMPORT_EXPORT_CSS)
     _load_docs()
     _collapse_all()
     STATE["current"] = "Settings · Display"
@@ -1245,6 +1312,9 @@ def index() -> None:
             ui.button("Export description", icon="description", on_click=_export_description) \
                 .props("flat color=white") \
                 .tooltip("Write the whole strategy to output/strategy_description.txt")
+            ui.button("Import / export", icon="import_export", on_click=_show_import_export) \
+                .props("flat color=white") \
+                .tooltip("Download or replace strategy.yaml / settings.yaml directly")
 
     with ui.tabs(on_change=on_tab_change).classes("w-full") as tabs:
         for label in TAB_DOC:

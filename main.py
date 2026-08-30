@@ -9,7 +9,8 @@ The single entrypoint for the whole application.
     python main.py credentials --clear   delete every stored credential and the saved session
 
 Every mode goes through the same startup: resolve directories, configure
-logging, migrate any legacy .env credentials into the OS keyring.
+logging, create default config files if this is a fresh install, migrate any
+legacy .env credentials into the OS keyring.
 """
 
 from __future__ import annotations
@@ -22,12 +23,14 @@ import time
 import app_logging
 import app_paths
 import secrets_store
+from ui import persistence
 
 def bootstrap(to_console: bool = True) -> None:
     app_paths.ensure_dirs()
     app_logging.configure(level=logging.INFO, to_console=to_console)
     log = app_logging.get_logger(__name__)
     log.info("data directory: %s", app_paths.describe())
+    persistence.ensure_default_configs()
     try:
         moved = secrets_store.migrate_env_file()
         if moved:

@@ -130,6 +130,47 @@ def validate_settings(data: Any) -> schema.Settings:
 
 
 # ---------------------------------------------------------------------------
+# First-run defaults -- a frozen install has no repo-checked-in config/ to
+# fall back on, so config_dir() can be genuinely empty.
+# ---------------------------------------------------------------------------
+
+
+def _default_strategy() -> dict:
+    return {
+        "name": "New Strategy",
+        "general": {"exchanges": []},
+        "ta": [],
+        "definitions": [],
+        "conditions": [],
+    }
+
+
+def _default_settings() -> dict:
+    return {
+        "display": {
+            "display_panels": [],
+            "examination_window": 0,
+            "instrument_id": "",
+            "timeframe": "",
+            "signal_aggregates": [],
+        },
+        "historical": {"from": "", "to": ""},
+        "backtest": {"download": False, "reuse_signals": False, "visualize": False},
+        "dashboard": {"size": 1.0, "panels": []},
+    }
+
+
+def ensure_default_configs() -> None:
+    """Create an empty-but-valid strategy.yaml/settings.yaml if either is
+    missing, so a fresh install has something to load instead of crashing."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if not STRATEGY_PATH.is_file():
+        save_document(_default_strategy(), STRATEGY_PATH)
+    if not SETTINGS_PATH.is_file():
+        save_document(_default_settings(), SETTINGS_PATH)
+
+
+# ---------------------------------------------------------------------------
 # Convenience: load + validate together
 # ---------------------------------------------------------------------------
 
