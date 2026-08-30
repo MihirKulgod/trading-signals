@@ -880,8 +880,8 @@ def charts_tab() -> None:
     with ui.card().classes("w-full"):
         with ui.row().classes("items-center gap-3"):
             ui.select(blocks, value=CHART_STATE["block"], label="condition block",
-                      on_change=lambda e: _select_block(e.value)) \
-                .props("dense").classes("min-w-[280px]")
+                      with_input=True, on_change=lambda e: _select_block(e.value)) \
+                .props("dense options-dense").classes("min-w-[280px]")
             ui.button(icon="refresh", on_click=charts_tab.refresh) \
                 .props("flat dense").tooltip("Rescan the output folder")
 
