@@ -199,14 +199,14 @@ WHEEL_DETENT = 50.0
 WHEEL_NOTCH = 40.0
 
 
-def _keep_wheel(card) -> None:
+def _keep_wheel(element) -> None:
     """
-    Stop a wheel over an inspector from scrolling the page as well as stepping
-    through time. A second, client-only listener so the server still receives
-    every delta; preventDefault works here because the element is not one of
-    the roots browsers force wheel listeners to be passive on.
+    Stop a wheel over the time controls from scrolling the page as well as
+    stepping through time. A second, client-only listener so the server still
+    receives every delta; preventDefault works here because the element is
+    not one of the roots browsers force wheel listeners to be passive on.
     """
-    card.on("wheel", js_handler="(e) => e.preventDefault()")
+    element.on("wheel", js_handler="(e) => e.preventDefault()")
 
 
 def _signals_frame():
@@ -424,8 +424,6 @@ def _signal_inspector() -> None:
     stamp = frame.index[INSPECT["position"]]
 
     card = ui.card().classes("w-full")
-    card.on("wheel", _wheel, ["deltaY"])   # unthrottled: a dropped event loses its delta
-    _keep_wheel(card)
     with card:
         with ui.row().classes("items-center gap-2 w-full"):
             ui.label("Inspect cached signals").classes("font-medium")
@@ -449,28 +447,34 @@ def _signal_inspector() -> None:
                                with_input=True,
                                on_change=lambda e: _set_column(e.value)) \
                 .props("dense options-dense").classes("min-w-[280px]")
-            # Committed on Enter or on leaving the field. Validating per keystroke
-            # made a half-deleted time like "10:4" parse as 10:04 and jump.
-            moment = ui.input(label="date and time",
-                              value=stamp.strftime("%Y-%m-%d %H:%M")).props("dense")
-            moment.on("keydown.enter", lambda: _seek(moment.value))
-            moment.on("blur", lambda: _seek(moment.value))
-            with ui.menu().props("no-parent-event") as calendar:
-                ui.date(value=str(stamp.date()), on_change=lambda e: _set_date(e.value))
-                with ui.row().classes("justify-end"):
-                    ui.button("Close", on_click=calendar.close).props("flat")
-            with moment.add_slot("append"):
-                ui.icon("edit_calendar").on("click", calendar.open).classes("cursor-pointer")
-            ui.button(icon="arrow_upward", on_click=lambda: _step(1)) \
-                .props("flat dense").tooltip("One minute later")
-            ui.button(icon="arrow_downward", on_click=lambda: _step(-1)) \
-                .props("flat dense").tooltip("One minute earlier")
+            # Scoped to just the time controls, not the whole card, so the
+            # page can still be scrolled with the mouse anywhere else over it.
+            time_controls = ui.row().classes("items-center gap-1")
+            time_controls.on("wheel", _wheel, ["deltaY"])   # unthrottled: a dropped event loses its delta
+            _keep_wheel(time_controls)
+            with time_controls:
+                # Committed on Enter or on leaving the field. Validating per keystroke
+                # made a half-deleted time like "10:4" parse as 10:04 and jump.
+                moment = ui.input(label="date and time",
+                                  value=stamp.strftime("%Y-%m-%d %H:%M")).props("dense")
+                moment.on("keydown.enter", lambda: _seek(moment.value))
+                moment.on("blur", lambda: _seek(moment.value))
+                with ui.menu().props("no-parent-event") as calendar:
+                    ui.date(value=str(stamp.date()), on_change=lambda e: _set_date(e.value))
+                    with ui.row().classes("justify-end"):
+                        ui.button("Close", on_click=calendar.close).props("flat")
+                with moment.add_slot("append"):
+                    ui.icon("edit_calendar").on("click", calendar.open).classes("cursor-pointer")
+                ui.button(icon="arrow_upward", on_click=lambda: _step(1)) \
+                    .props("flat dense").tooltip("One minute later")
+                ui.button(icon="arrow_downward", on_click=lambda: _step(-1)) \
+                    .props("flat dense").tooltip("One minute earlier")
         with ui.row().classes("items-center gap-3 w-full"):
             value = ui.label("").classes("text-2xl font-semibold px-3 py-1 rounded")
             caption = ui.label("").classes(MUTED)
             ui.space()
             counter = ui.label("").classes(MUTED)
-        ui.label("Scroll over this panel to step through the file a minute at a time.") \
+        ui.label("Scroll over the time field to step through the file a minute at a time.") \
             .classes(MUTED)
     with right:
         _parents_list()
@@ -645,8 +649,6 @@ def _indicator_inspector() -> None:
                         key=lambda t: int(t[:-3]) if t.endswith("min") else t)
 
     card = ui.card().classes("w-full")
-    card.on("wheel", _indicator_wheel, ["deltaY"])   # unthrottled, as with signals
-    _keep_wheel(card)
     with card:
         with ui.row().classes("items-center gap-2 w-full"):
             ui.label("Inspect cached indicators").classes("font-medium")
@@ -666,30 +668,36 @@ def _indicator_inspector() -> None:
                                with_input=True,
                                on_change=lambda e: _indicator_set_column(e.value)) \
                 .props("dense options-dense").classes("min-w-[200px]")
-            # Committed on Enter or on leaving the field, same as the signal
-            # inspector -- validating per keystroke breaks a half-typed time.
-            moment = ui.input(label="date and time",
-                              value=stamp.strftime("%Y-%m-%d %H:%M")).props("dense")
-            moment.on("keydown.enter", lambda: _indicator_seek(moment.value))
-            moment.on("blur", lambda: _indicator_seek(moment.value))
-            with ui.menu().props("no-parent-event") as calendar:
-                ui.date(value=str(stamp.date()),
-                       on_change=lambda e: _indicator_set_date(e.value))
-                with ui.row().classes("justify-end"):
-                    ui.button("Close", on_click=calendar.close).props("flat")
-            with moment.add_slot("append"):
-                ui.icon("edit_calendar").on("click", calendar.open).classes("cursor-pointer")
-            ui.button(icon="arrow_upward", on_click=lambda: _indicator_step(1)) \
-                .props("flat dense").tooltip("One row later")
-            ui.button(icon="arrow_downward", on_click=lambda: _indicator_step(-1)) \
-                .props("flat dense").tooltip("One row earlier")
+            # Scoped to just the time controls, not the whole card, so the
+            # page can still be scrolled with the mouse anywhere else over it.
+            time_controls = ui.row().classes("items-center gap-1")
+            time_controls.on("wheel", _indicator_wheel, ["deltaY"])   # unthrottled, as with signals
+            _keep_wheel(time_controls)
+            with time_controls:
+                # Committed on Enter or on leaving the field, same as the signal
+                # inspector -- validating per keystroke breaks a half-typed time.
+                moment = ui.input(label="date and time",
+                                  value=stamp.strftime("%Y-%m-%d %H:%M")).props("dense")
+                moment.on("keydown.enter", lambda: _indicator_seek(moment.value))
+                moment.on("blur", lambda: _indicator_seek(moment.value))
+                with ui.menu().props("no-parent-event") as calendar:
+                    ui.date(value=str(stamp.date()),
+                           on_change=lambda e: _indicator_set_date(e.value))
+                    with ui.row().classes("justify-end"):
+                        ui.button("Close", on_click=calendar.close).props("flat")
+                with moment.add_slot("append"):
+                    ui.icon("edit_calendar").on("click", calendar.open).classes("cursor-pointer")
+                ui.button(icon="arrow_upward", on_click=lambda: _indicator_step(1)) \
+                    .props("flat dense").tooltip("One row later")
+                ui.button(icon="arrow_downward", on_click=lambda: _indicator_step(-1)) \
+                    .props("flat dense").tooltip("One row earlier")
         with ui.row().classes("items-center gap-3 w-full"):
             value = ui.label("").classes(
                 "text-2xl font-semibold px-3 py-1 rounded bg-gray-100 text-gray-900")
             caption = ui.label("").classes(MUTED)
             ui.space()
             counter = ui.label("").classes(MUTED)
-        ui.label("Scroll over this panel to step through the file a row at a time.") \
+        ui.label("Scroll over the time field to step through the file a row at a time.") \
             .classes(MUTED)
 
     _PANEL_IND.update(value=value, caption=caption, counter=counter, moment=moment,
