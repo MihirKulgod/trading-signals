@@ -140,4 +140,13 @@ def main() -> int:
     return 2
 
 if __name__ in {"__main__", "__mp_main__"}:
+    # A frozen build's native window spawns a second process for the pywebview
+    # shell, which re-executes this same exe. freeze_support() must run before
+    # any of our own argv handling: it recognizes that re-entry from special
+    # arguments multiprocessing adds, dispatches to the real spawned target,
+    # and exits -- without it, main() misreads those arguments as an unknown
+    # mode, prints the module docstring, and exits immediately, which trips
+    # nicegui's native-mode watchdog into tearing down the whole app.
+    import multiprocessing
+    multiprocessing.freeze_support()
     raise SystemExit(main())
