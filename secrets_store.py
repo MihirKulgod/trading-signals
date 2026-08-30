@@ -84,6 +84,12 @@ def read_session() -> dict:
         log.warning("could not read session file: %s", error)
         return {}
 
+def clear_session() -> None:
+    try:
+        app_paths.session_path().unlink()
+    except FileNotFoundError:
+        pass
+
 def write_session(**values) -> None:
     path = app_paths.session_path()
     path.parent.mkdir(parents=True, exist_ok=True)

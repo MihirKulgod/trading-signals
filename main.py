@@ -6,6 +6,7 @@ The single entrypoint for the whole application.
     python main.py live         run the live engine headlessly until interrupted
     python main.py doctor       print resolved paths and credential status
     python main.py credentials  prompt for each credential and store it in the OS keyring
+    python main.py credentials --clear   delete every stored credential and the saved session
 
 Every mode goes through the same startup: resolve directories, configure
 logging, migrate any legacy .env credentials into the OS keyring.
@@ -48,8 +49,19 @@ def run_doctor() -> int:
           f" (last login {session.get('KITE_LOGIN_TIME', 'never')})")
     return 0
 
-def run_credentials() -> int:
+def run_credentials(clear: bool = False) -> int:
     import getpass
+
+    if clear:
+        answer = input("Type 'clear' to delete every stored credential and the saved session: ")
+        if answer != "clear":
+            print("cancelled")
+            return 1
+        for key in secrets_store.CREDENTIAL_KEYS:
+            secrets_store.delete_credential(key)
+        secrets_store.clear_session()
+        print("cleared")
+        return 0
 
     print("Enter each credential (leave blank to keep the current value).\n")
     status = secrets_store.credential_status()
@@ -112,7 +124,7 @@ def main() -> int:
 
     if mode == "credentials":
         bootstrap(to_console=False)
-        return run_credentials()
+        return run_credentials(clear="--clear" in sys.argv[2:])
 
     if mode in ("app", "ui"):
         bootstrap()
