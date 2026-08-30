@@ -1,5 +1,12 @@
 import os
 
+# Charts render to PNG from a background job thread, never a Tk main loop, so
+# the backend has to be forced before mplfinance pulls in pyplot -- otherwise
+# matplotlib auto-selects TkAgg on any machine that happens to have tkinter
+# installed (e.g. a stock Windows Python), which crashes cross-thread.
+import matplotlib
+matplotlib.use("Agg")
+
 import mplfinance as mpf
 import pandas as pd
 
