@@ -16,6 +16,10 @@ pydantic==2.13.4
 PyOTP==2.10.0
 python-dotenv==1.2.2
 pytz==2026.2
+# Only needed for the frozen build's native desktop window (main.py checks
+# app_paths.is_frozen()); scoped to Windows since that's the only packaged
+# target so far.
+pywebview==6.2.1; sys_platform == "win32"
 PyYAML==6.0.3
 requests==2.34.2
 ruamel.yaml==0.19.1

@@ -101,7 +101,10 @@ def run_app() -> int:
     from nicegui import ui
     from ui.app import index  # noqa: F401  (registers the page)
 
-    ui.run(title="Trading Signals", port=8080, reload=False, show=False)
+    # A frozen build opens its own desktop window (native=True auto-picks a
+    # free port); running from source keeps the plain browser-tab workflow,
+    # since that's what every dev tool here drives.
+    ui.run(title="Trading Signals", native=app_paths.is_frozen(), reload=False, show=False)
     return 0
 
 def main() -> int:
