@@ -86,7 +86,7 @@ def _run_backtest_job():
             download_data=options["download"],
             reuse_signals=options["reuse_signals"],
             visualize=options["visualize"],
-            progress=job.report,
+            progress=job.report, chart_valid_days=True,
         )
         stats = signal_stats(df, list(days))
         return {
@@ -855,10 +855,17 @@ def _chart_windows(block: str) -> dict:
     if not path.is_file():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         log.warning("could not read active windows for %s", block)
         return {}
+    # A file written before windows.json carried a label is a plain
+    # {day: [[start, end, bars], ...]} -- fall back to the bare date rather
+    # than crash on it; the next run will overwrite it with the new shape.
+    return {
+        day: value if isinstance(value, dict) else {"windows": value, "label": day}
+        for day, value in raw.items()
+    }
 
 # Module-level so the selection survives leaving and re-entering the tab, which
 # re-runs the builder. Stored by name rather than Path so it still matches after
@@ -936,30 +943,39 @@ def _rendered_chart_viewer(block: str, images: list) -> None:
 
 def _placeholder_chart_viewer(block: str, days: list) -> None:
     """The last run had 'render charts' off, so there is no PNG per session --
-    show the placeholder image and the window times, which are still cheap
-    to compute and were saved regardless."""
+    show the placeholder image and the same HIT/blocked wording a rendered
+    filename would carry, which is still cheap to compute and saved
+    regardless."""
+    windows = _chart_windows(block)
     if CHART_STATE["image"] not in days:
         CHART_STATE["image"] = days[0]
     selected_day = CHART_STATE["image"]
+    selected_label = windows.get(selected_day, {}).get("label", selected_day)
 
-    ui.label(f"{len(days)} sessions · images not rendered "
+    hits = [d for d in days if "HIT" in windows.get(d, {}).get("label", "")]
+    ui.label(f"{len(days)} sessions · {len(hits)} hit · images not rendered "
              "(run with 'render charts' on to see them)").classes(MUTED)
 
     with ui.row().classes("w-full gap-4 items-start no-wrap"):
         with ui.column().classes("min-w-[320px] max-h-[70vh] overflow-auto"):
             for day in days:
+                label = windows.get(day, {}).get("label", day)
+                hit = "HIT" in label
                 current = day == selected_day
                 with ui.row().classes("items-center gap-2 cursor-pointer rounded px-1"
                                       + (" bg-blue-100" if current else "")) \
                         .on("click", lambda d=day: _show_image(d)):
-                    ui.label(day).classes("text-sm")
+                    ui.badge("hit" if hit else "—").props(
+                        "color=positive" if hit else "color=grey")
+                    ui.label(label).classes(
+                        "text-sm" + ("" if hit else " text-gray-500"))
         with ui.column().classes("grow"):
-            ui.label(selected_day).classes("font-medium")
+            ui.label(selected_label).classes("font-medium")
             ui.image(f"{CHARTS_ROUTE}/{quote(PLACEHOLDER_IMAGE)}").classes("w-full")
             _active_windows(block, selected_day)
 
 def _active_windows(block: str, day: str) -> None:
-    runs = _chart_windows(block).get(day, [])
+    runs = _chart_windows(block).get(day, {}).get("windows", [])
     if not runs:
         return
     total = sum(bars for _, _, bars in runs)

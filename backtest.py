@@ -149,17 +149,53 @@ def report_reference_warnings():
 
 WINDOWS_FILE = "windows.json"
 
-def save_active_windows(condition_id, sessions: dict) -> None:
+def chart_name(timestamp, minutes: int, blocker) -> str:
+    """Wording stating the session's outcome -- used both as a rendered
+    chart's filename and as the placeholder viewer's label, so the two can
+    never disagree about what a given session did."""
+    if minutes:
+        return f"{timestamp.date()} HIT {minutes}min"
+    if blocker:
+        return f"{timestamp.date()} blocked by {blocker[0]}"
+    return f"{timestamp.date()}"
+
+def compute_chart_sessions(df, days, children_map) -> dict:
     """
-    Write the stretches a condition was true next to its charts, so the viewer
-    can list them without reloading the signal frame.
+    Per condition, per charted session (``days[col]``): its active windows
+    and the chart_name() wording for it. Computed once, independent of
+    whether charts are rendered, so save_windows() and render_day_charts()
+    always agree.
+    """
+    windows = active_windows(df, days)
+    blockers = session_blockers(df, list(days), children_map)
+    sessions = {}
+    for condition_id, per_day in windows.items():
+        condition_blockers = blockers.get(condition_id, {})
+        sessions[condition_id] = {
+            day: {
+                "runs": runs,
+                "label": chart_name(pd.Timestamp(day), sum(bars for _, _, bars in runs),
+                                    condition_blockers.get(day)),
+            }
+            for day, runs in per_day.items()
+        }
+    return sessions
+
+def save_active_windows(condition_id, per_day: dict) -> None:
+    """
+    Write the stretches a condition was true, and its chart_name() label,
+    next to its charts -- so the viewer can list sessions without reloading
+    the signal frame, with or without rendered images.
     """
     folder = OUTPUT_DIR / str(condition_id)
     folder.mkdir(parents=True, exist_ok=True)
     payload = {
-        str(day): [[start.strftime("%H:%M"), end.strftime("%H:%M"), int(bars)]
-                   for start, end, bars in runs]
-        for day, runs in sessions.items()
+        str(day): {
+            "windows": [[start.strftime("%H:%M"), end.strftime("%H:%M"), int(bars)]
+                        for start, end, bars in info["runs"]],
+            "label": info["label"],
+        }
+        for day, info in per_day.items()
     }
     (folder / WINDOWS_FILE).write_text(json.dumps(payload, indent=1), encoding="utf-8")
 
@@ -176,25 +212,16 @@ def clear_stale_charts(days) -> None:
         if stale.is_dir():
             shutil.rmtree(stale)
 
-def save_windows(df, days) -> None:
+def save_windows(days, sessions: dict) -> None:
     """
-    Compute and write each condition's active windows, independent of whether
-    charts are rendered -- the Charts tab lists session times from this file
-    even on a run with 'render charts' off.
+    Write each condition's sessions, independent of whether charts are
+    rendered -- the Charts tab lists session times from this file even on a
+    run with 'render charts' off.
     """
-    windows = active_windows(df, list(days))
     for condition_id in days:
-        save_active_windows(condition_id, windows.get(condition_id, {}))
+        save_active_windows(condition_id, sessions.get(condition_id, {}))
 
-def chart_name(timestamp, minutes: int, blocker) -> str:
-    """Filename stem stating the session's outcome."""
-    if minutes:
-        return f"{timestamp.date()} HIT {minutes}min"
-    if blocker:
-        return f"{timestamp.date()} blocked by {blocker[0]}"
-    return f"{timestamp.date()}"
-
-def render_day_charts(settings, instruments_data, df, children_map, days, progress=None):
+def render_day_charts(settings, instruments_data, df, children_map, days, sessions, progress=None):
     display = settings["display"]
     output_timeframe = display["timeframe"]
     signal_aggregates = display["signal_aggregates"]
@@ -205,10 +232,6 @@ def render_day_charts(settings, instruments_data, df, children_map, days, progre
         if instrument["id"] == display["instrument_id"]
     )
     output_df = append_signal_aggregates(output_df, df, output_timeframe, signal_aggregates)
-
-    dates = pd.Series(df.index.date, index=df.index)
-    minutes_by_day = {c: (df[c] >= 0).groupby(dates).sum().to_dict() for c in days}
-    blockers = session_blockers(df, list(days), children_map)
 
     tasks = [(c, t) for c in days for t in days[c]]
     for done, (condition_col, timestamp) in enumerate(tqdm(tasks, desc="[Visualizing]")):
@@ -225,11 +248,7 @@ def render_day_charts(settings, instruments_data, df, children_map, days, progre
             display["display_panels"],
             signal_aggregates,
             children_map.get(condition_col, []),
-            name=chart_name(
-                timestamp,
-                int(minutes_by_day[condition_col].get(timestamp.date(), 0)),
-                blockers.get(condition_col, {}).get(timestamp.date()),
-            ),
+            name=sessions[condition_col][timestamp.date()]["label"],
         )
 
 def report_selection(config, only):
@@ -301,11 +320,12 @@ def run_backtest(config, settings, start_date: date, end_date: date,
     # A re-evaluated condition's old output is stale regardless of whether
     # this run redraws it, so drop it before anything gets rewritten.
     clear_stale_charts(charted)
+    sessions = compute_chart_sessions(df, charted, children_map)
     if visualize:
         stage("rendering charts")
-        render_day_charts(settings, instruments_data, df, children_map, charted, progress)
+        render_day_charts(settings, instruments_data, df, children_map, charted, sessions, progress)
     # Window times are cheap and always useful, even with images turned off.
-    save_windows(df, charted)
+    save_windows(charted, sessions)
 
     if progress is not None:
         progress(1.0, "done")

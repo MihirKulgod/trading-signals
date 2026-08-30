@@ -303,19 +303,25 @@ def find_signal_days(df: pd.DataFrame, condition_cols: list[str]):
         )
     return result
 
-def active_windows(df: pd.DataFrame, condition_cols: list[str]):
+def active_windows(df: pd.DataFrame, days: dict):
     """
-    Per condition, per session: the contiguous stretches it stayed true, as
-    (first bar, last bar, bar count). Runs are found by index position rather
+    Per condition, per charted session (``days[col]``): the contiguous
+    stretches it stayed true, as (first bar, last bar, bar count). A session
+    that was evaluated but never fired still gets an empty list rather than
+    being dropped, so a valid-but-failed session can be told apart from one
+    that was never reached at all. Runs are found by index position rather
     than clock gap, so a session break never joins two stretches.
     """
     dates = pd.Series(df.index.date, index=df.index)
     result = {}
-    for col in condition_cols:
+    for col, timestamps in days.items():
         if col not in df.columns:
             raise ColumnNotFoundError(col, df)
+        wanted_days = {ts.date() for ts in timestamps}
         per_session = {}
         for day, group in (df[col] >= 0).groupby(dates):
+            if day not in wanted_days:
+                continue
             flags, index = list(group), group.index
             runs, start = [], None
             for position, active in enumerate(flags):
@@ -326,8 +332,7 @@ def active_windows(df: pd.DataFrame, condition_cols: list[str]):
                     start = None
             if start is not None:
                 runs.append((index[start], index[-1], len(flags) - start))
-            if runs:
-                per_session[day] = runs
+            per_session[day] = runs
         result[col] = per_session
     return result
 
