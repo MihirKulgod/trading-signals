@@ -163,6 +163,29 @@ def save_active_windows(condition_id, sessions: dict) -> None:
     }
     (folder / WINDOWS_FILE).write_text(json.dumps(payload, indent=1), encoding="utf-8")
 
+def clear_stale_charts(days) -> None:
+    """
+    Drop each about-to-be-reevaluated condition's whole output folder (old
+    images included), so a re-run never leaves a previous run's charts sitting
+    next to -- or in place of -- this run's results, even when this run itself
+    isn't rendering new ones. Only the conditions about to be re-evaluated are
+    touched, so running one block does not wipe images belonging to another.
+    """
+    for condition_id in days:
+        stale = OUTPUT_DIR / str(condition_id)
+        if stale.is_dir():
+            shutil.rmtree(stale)
+
+def save_windows(df, days) -> None:
+    """
+    Compute and write each condition's active windows, independent of whether
+    charts are rendered -- the Charts tab lists session times from this file
+    even on a run with 'render charts' off.
+    """
+    windows = active_windows(df, list(days))
+    for condition_id in days:
+        save_active_windows(condition_id, windows.get(condition_id, {}))
+
 def chart_name(timestamp, minutes: int, blocker) -> str:
     """Filename stem stating the session's outcome."""
     if minutes:
@@ -183,20 +206,9 @@ def render_day_charts(settings, instruments_data, df, children_map, days, progre
     )
     output_df = append_signal_aggregates(output_df, df, output_timeframe, signal_aggregates)
 
-    # Clear only the conditions about to be re-rendered, so running one block
-    # does not wipe images belonging to every other condition.
-    for condition_id in days:
-        stale = OUTPUT_DIR / str(condition_id)
-        if stale.is_dir():
-            shutil.rmtree(stale)
-
     dates = pd.Series(df.index.date, index=df.index)
     minutes_by_day = {c: (df[c] >= 0).groupby(dates).sum().to_dict() for c in days}
     blockers = session_blockers(df, list(days), children_map)
-
-    windows = active_windows(df, list(days))
-    for condition_id in days:
-        save_active_windows(condition_id, windows.get(condition_id, {}))
 
     tasks = [(c, t) for c in days for t in days[c]]
     for done, (condition_col, timestamp) in enumerate(tqdm(tasks, desc="[Visualizing]")):
@@ -282,12 +294,18 @@ def run_backtest(config, settings, start_date: date, end_date: date,
     report_days(df, condition_cols, days, children_map)
     report_reference_warnings()
 
+    # chart_valid_days draws every session the condition was evaluated, not
+    # just the ones it fired on, so a single block can be reviewed over time.
+    charted = find_valid_days(df, chart_cols) if chart_valid_days else days
+
+    # A re-evaluated condition's old output is stale regardless of whether
+    # this run redraws it, so drop it before anything gets rewritten.
+    clear_stale_charts(charted)
     if visualize:
-        # chart_valid_days draws every session the condition was evaluated, not
-        # just the ones it fired on, so a single block can be reviewed over time.
         stage("rendering charts")
-        charted = find_valid_days(df, chart_cols) if chart_valid_days else days
         render_day_charts(settings, instruments_data, df, children_map, charted, progress)
+    # Window times are cheap and always useful, even with images turned off.
+    save_windows(df, charted)
 
     if progress is not None:
         progress(1.0, "done")

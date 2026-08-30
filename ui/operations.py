@@ -808,12 +808,31 @@ def _stop_live() -> None:
     live_tab.refresh()
 
 CHARTS_ROUTE = "/charts"
+PLACEHOLDER_IMAGE = "_no_chart.png"
+
+def _ensure_placeholder_image() -> None:
+    """A dark 'No image generated' image, shown in place of a real chart when
+    a run had 'render charts' off. Generated once and reused after that."""
+    path = app_paths.output_dir() / PLACEHOLDER_IMAGE
+    if path.is_file():
+        return
+    from PIL import Image, ImageDraw, ImageFont
+
+    width, height, text = 1600, 640, "No image generated"
+    image = Image.new("RGB", (width, height), color=(20, 20, 20))
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default(size=48)
+    left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+    draw.text(((width - (right - left)) / 2 - left, (height - (bottom - top)) / 2 - top),
+              text, fill=(235, 235, 235), font=font)
+    image.save(path)
 
 def mount_charts() -> None:
     """Serve the rendered charts so the Charts tab can display them in place."""
     from nicegui import app as nicegui_app
 
     app_paths.output_dir().mkdir(parents=True, exist_ok=True)
+    _ensure_placeholder_image()
     nicegui_app.add_static_files(CHARTS_ROUTE, str(app_paths.output_dir()))
 
 def _chart_blocks() -> list[str]:
@@ -850,8 +869,8 @@ CHART_STATE: dict = {"block": None, "image": None}
 def charts_tab() -> None:
     blocks = _chart_blocks()
     if not blocks:
-        ui.label("No charts yet — run a backtest with 'render charts' on, "
-                 "or use a condition block's run button.").classes(MUTED)
+        ui.label("Nothing here yet — run a backtest, or use a condition "
+                 "block's run button.").classes(MUTED)
         return
 
     if CHART_STATE["block"] not in blocks:  # first visit, or the block is gone
@@ -877,10 +896,17 @@ def _select_block(block: str) -> None:
 def _chart_viewer() -> None:
     block = CHART_STATE["block"]
     images = _chart_images(block) if block else []
-    if not images:
-        ui.label("This block has no rendered sessions.").classes(MUTED)
+    if images:
+        _rendered_chart_viewer(block, images)
         return
 
+    days = sorted(_chart_windows(block).keys()) if block else []
+    if not days:
+        ui.label("This block has no rendered sessions.").classes(MUTED)
+        return
+    _placeholder_chart_viewer(block, days)
+
+def _rendered_chart_viewer(block: str, images: list) -> None:
     names = [p.name for p in images]
     if CHART_STATE["image"] not in names:  # re-rendered charts change their names
         CHART_STATE["image"] = names[0]
@@ -906,10 +932,34 @@ def _chart_viewer() -> None:
             # Chart names carry spaces, so the src has to be percent-encoded.
             src = f"{CHARTS_ROUTE}/{quote(block)}/{quote(selected.name)}"
             ui.image(src).classes("w-full")
-            _active_windows(block, selected)
+            _active_windows(block, selected.stem[:10])
 
-def _active_windows(block: str, selected) -> None:
-    runs = _chart_windows(block).get(selected.stem[:10], [])  # names start YYYY-MM-DD
+def _placeholder_chart_viewer(block: str, days: list) -> None:
+    """The last run had 'render charts' off, so there is no PNG per session --
+    show the placeholder image and the window times, which are still cheap
+    to compute and were saved regardless."""
+    if CHART_STATE["image"] not in days:
+        CHART_STATE["image"] = days[0]
+    selected_day = CHART_STATE["image"]
+
+    ui.label(f"{len(days)} sessions · images not rendered "
+             "(run with 'render charts' on to see them)").classes(MUTED)
+
+    with ui.row().classes("w-full gap-4 items-start no-wrap"):
+        with ui.column().classes("min-w-[320px] max-h-[70vh] overflow-auto"):
+            for day in days:
+                current = day == selected_day
+                with ui.row().classes("items-center gap-2 cursor-pointer rounded px-1"
+                                      + (" bg-blue-100" if current else "")) \
+                        .on("click", lambda d=day: _show_image(d)):
+                    ui.label(day).classes("text-sm")
+        with ui.column().classes("grow"):
+            ui.label(selected_day).classes("font-medium")
+            ui.image(f"{CHARTS_ROUTE}/{quote(PLACEHOLDER_IMAGE)}").classes("w-full")
+            _active_windows(block, selected_day)
+
+def _active_windows(block: str, day: str) -> None:
+    runs = _chart_windows(block).get(day, [])
     if not runs:
         return
     total = sum(bars for _, _, bars in runs)
