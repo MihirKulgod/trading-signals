@@ -5,6 +5,7 @@ The single entrypoint for the whole application.
     python main.py backtest     run a backtest headlessly (all backtest.py flags apply)
     python main.py live         run the live engine headlessly until interrupted
     python main.py doctor       print resolved paths and credential status
+    python main.py credentials  prompt for each credential and store it in the OS keyring
 
 Every mode goes through the same startup: resolve directories, configure
 logging, migrate any legacy .env credentials into the OS keyring.
@@ -45,6 +46,21 @@ def run_doctor() -> int:
     session = secrets_store.read_session()
     print(f"\nsession: {'present' if session.get('KITE_ACCESS_TOKEN') else 'none'}"
           f" (last login {session.get('KITE_LOGIN_TIME', 'never')})")
+    return 0
+
+def run_credentials() -> int:
+    import getpass
+
+    print("Enter each credential (leave blank to keep the current value).\n")
+    status = secrets_store.credential_status()
+    for key in secrets_store.CREDENTIAL_KEYS:
+        value = getpass.getpass(f"{key} [{'set' if status[key] else 'MISSING'}]: ")
+        if value:
+            secrets_store.set_credential(key, value)
+
+    print("\ncredentials:")
+    for key, present in secrets_store.credential_status().items():
+        print(f"  {key:18}: {'set' if present else 'MISSING'}")
     return 0
 
 def run_live_headless() -> int:
@@ -93,6 +109,10 @@ def main() -> int:
     if mode == "doctor":
         bootstrap(to_console=False)
         return run_doctor()
+
+    if mode == "credentials":
+        bootstrap(to_console=False)
+        return run_credentials()
 
     if mode in ("app", "ui"):
         bootstrap()
