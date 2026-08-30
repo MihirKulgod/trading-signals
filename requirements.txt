@@ -1,0 +1,22 @@
+# Direct dependencies only -- everything transitive (including OS-specific
+# extras like keyring's Windows/Linux/macOS backends, or kiteconnect's
+# Twisted/autobahn websocket stack) is resolved by pip from each package's
+# own platform markers, so this file installs correctly unmodified on
+# Windows, macOS, and Linux.
+keyring==25.7.0
+kiteconnect==5.2.0
+mplfinance==0.12.10b0
+nicegui==3.14.0
+pandas==3.0.3
+# The OpenBB fork, not the (defunct) upstream pandas_ta package.
+pandas-ta-openbb==0.4.24
+Pillow==12.3.0
+platformdirs==4.11.2
+pydantic==2.13.4
+PyOTP==2.10.0
+python-dotenv==1.2.2
+pytz==2026.2
+PyYAML==6.0.3
+requests==2.34.2
+ruamel.yaml==0.19.1
+tqdm==4.68.4
