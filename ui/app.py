@@ -635,7 +635,8 @@ def _reverse_condition(node: CommentedMap) -> None:
     old_id = node.get("id")
     try:
         condition.reverse_spec(node, definitions)
-    except (condition.UnsupportedReversalError, condition.DefinitionNotFoundError) as error:
+    except (condition.UnsupportedReversalError, condition.DefinitionNotFoundError,
+            condition.IncorrectReferenceError) as error:
         ui.notify(f"Could not reverse {old_id}: {error}", type="negative", timeout=8000)
         return
     ui.notify(f"Reversed {old_id} -> {node['id']}")

@@ -687,6 +687,14 @@ class UnsupportedReversalError(ValueError):
         super().__init__(f"don't know how to reverse condition type {cond_type!r} (id={node_id!r})")
         self.cond_type, self.node_id = cond_type, node_id
 
+class IncorrectReferenceError(ValueError):
+    def __init__(self, node_id, mirror):
+        super().__init__(
+            f"could not reverse {node_id!r} because incorrect reference was found: "
+            f"{mirror!r} already exists but is not the expected reversal"
+        )
+        self.node_id, self.mirror = node_id, mirror
+
 def _find_definition_spec(definitions: list, target: str):
     for definition in definitions:
         if definition.get("id") == target:
@@ -763,6 +771,10 @@ def reverse_spec(spec: dict, definitions: list) -> None:
     is the live (mutable) definitions list, used to look up or create a
     reversed counterpart for any 'ref' encountered."""
     if is_time_gate(spec, definitions):
+        # Non-directional: the value/target stays untouched, but this node's
+        # id must still change, or a duplicated original/mirror pair collide
+        # on id once both live in the document.
+        spec["id"] = reverse_id(spec.get("id", ""))
         return
 
     cond_type = spec.get("condition")
@@ -771,13 +783,23 @@ def reverse_spec(spec: dict, definitions: list) -> None:
     if cond_type == "ref":
         target = spec["args"]["target"]
         mirror = reverse_id(target)
-        if _find_definition_spec(definitions, mirror) is None:
-            original = _find_definition_spec(definitions, target)
-            if original is None:
-                raise DefinitionNotFoundError(target)
+        original = _find_definition_spec(definitions, target)
+        if original is None:
+            raise DefinitionNotFoundError(target)
+        existing = _find_definition_spec(definitions, mirror)
+        if existing is None:
             duplicate = copy.deepcopy(original)
             definitions.append(duplicate)
             reverse_spec(duplicate, definitions)
+        else:
+            # The mirror already exists -- confirm it actually is what
+            # reversing `original` would produce, rather than trusting an id
+            # match alone; a stale or hand-edited mirror would otherwise send
+            # this reference to the wrong logic.
+            expected = copy.deepcopy(original)
+            reverse_spec(expected, copy.deepcopy(definitions))
+            if existing != expected:
+                raise IncorrectReferenceError(spec["id"], mirror)
         spec["args"]["target"] = mirror
         return
 
