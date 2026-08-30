@@ -22,3 +22,8 @@ output/
 .claude/
 # Runtime logs
 logs/
+
+# PyInstaller build artifacts
+dist/
+build/
+*.spec

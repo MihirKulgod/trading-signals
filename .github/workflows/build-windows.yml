@@ -1,0 +1,44 @@
+name: Build Windows executable
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        shell: pwsh
+        run: |
+          $nicegui = python -c "import nicegui, os; print(os.path.dirname(nicegui.__file__))"
+          pyinstaller --name "Trading Signals" --onedir `
+            --add-data "${nicegui};nicegui" `
+            --copy-metadata pandas-ta-openbb `
+            --copy-metadata keyring `
+            main.py
+
+      - name: Zip the build
+        shell: pwsh
+        run: Compress-Archive -Path "dist/Trading Signals/*" -DestinationPath "Trading-Signals-windows.zip"
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Trading-Signals-windows.zip
