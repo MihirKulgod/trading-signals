@@ -1016,6 +1016,12 @@ def _set_enabled(node: CommentedMap, value: bool) -> None:
         node["enabled"] = False
 
 
+def _set_all_enabled(nodes: CommentedSeq, value: bool) -> None:
+    for node in nodes:
+        _set_enabled(node, value)
+    _refresh_editors()
+
+
 def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabled=False,
                       draggable=False) -> None:
     cond_type = node.get("condition")
@@ -1125,6 +1131,10 @@ def _conditions_tab() -> None:
         ui.button(icon="add", on_click=lambda: _add_top_condition(conditions)) \
             .props("flat dense").tooltip("Add top-level condition")
         _paste_button(lambda: _paste_append(conditions), "Paste condition")
+        ui.button("Enable all", on_click=lambda: _set_all_enabled(conditions, True)) \
+            .props("flat dense")
+        ui.button("Disable all", on_click=lambda: _set_all_enabled(conditions, False)) \
+            .props("flat dense")
     if len(conditions) == 0:
         ui.label("No conditions defined.").classes(MUTED)
     with _sortable_column(conditions, 0):
