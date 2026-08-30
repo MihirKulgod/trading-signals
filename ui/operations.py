@@ -979,6 +979,11 @@ def refresh_operations() -> None:
     from ui import dashboard
 
     _backtest_status.refresh()
+    # A finished run can delete and re-render a block's charts under new
+    # filenames (the hit/blocked outcome for a day can change between runs),
+    # so a Charts tab left open on a stale selection needs to pick that up
+    # too, not just the status card.
+    _chart_viewer.refresh()
     # Repaint rather than refresh: rebuilding the grid would cancel a drag in
     # progress and close an open editor.
     from live_service import SERVICE
