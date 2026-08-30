@@ -25,6 +25,7 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 import app_paths
 import condition
 import description
+import secrets_store
 from ui import operations, persistence, vocabulary
 
 MUTED = "text-sm text-gray-500"
@@ -46,7 +47,6 @@ VALIDATORS: dict[str, Callable[[Any], Any]] = {
 # label -> which document that tab edits
 TAB_DOC = {
     "Settings · Display": "settings",
-    "Settings · Historical": "settings",
     "Strategy · General": "strategy",
     "Strategy · Indicators": "strategy",
     "Strategy · Definitions": "strategy",
@@ -202,29 +202,6 @@ def _add_panel_col(panel: CommentedMap) -> None:
 def _remove_panel_col(panel: CommentedMap, col_name: str) -> None:
     del panel[col_name]
     _display_tab.refresh()
-
-
-# ---------------------------------------------------------------------------
-# Settings · Historical
-# ---------------------------------------------------------------------------
-
-
-@ui.refreshable
-def _historical_tab() -> None:
-    historical = DOCS["settings"].setdefault("historical", CommentedMap())
-    with ui.card().classes("w-full"):
-        # The text input is the single writer to historical['from']. The date
-        # picker reads it one-way and writes back through the input, so the two
-        # controls never form a two-way binding cycle on the same key.
-        inp = ui.input(label="from (YYYY-MM-DD)")
-        inp.bind_value(historical, "from")
-        with ui.menu().props("no-parent-event") as menu:
-            ui.date(on_change=lambda e: inp.set_value(e.value)) \
-                .bind_value_from(historical, "from")
-            with ui.row().classes("justify-end"):
-                ui.button("Close", on_click=menu.close).props("flat")
-        with inp.add_slot("append"):
-            ui.icon("edit_calendar").on("click", menu.open).classes("cursor-pointer")
 
 
 # ---------------------------------------------------------------------------
@@ -1152,7 +1129,6 @@ def _conditions_tab() -> None:
 STATE = {"current": None, "reverting": False, "clipboard": None, "collapsed": set()}
 _TAB_BUILDERS: dict[str, Any] = {
     "Settings · Display": _display_tab,
-    "Settings · Historical": _historical_tab,
     "Strategy · General": _general_tab,
     "Strategy · Indicators": _indicators_tab,
     "Strategy · Definitions": _definitions_tab,
@@ -1261,6 +1237,52 @@ def _show_import_export() -> None:
     dialog.open()
 
 
+# label shown next to each field, in the order the menu displays them --
+# User ID first and unmasked (it's just an account identifier), then the
+# actual secrets, masked and blank until something is typed to replace them.
+_ACCOUNT_FIELDS = (
+    ("USER_ID", "User ID"),
+    ("KITE_API_KEY", "API Key"),
+    ("KITE_API_SECRET", "API Secret"),
+    ("PASSWORD", "Password"),
+    ("TOTP_SECRET", "TOTP Secret"),
+)
+
+
+def _save_account_fields(fields: dict) -> None:
+    """Same semantics as `main.py credentials`: blank keeps the existing
+    value, anything else replaces it in the keyring immediately."""
+    changed = []
+    for key, field in fields.items():
+        value = field.value
+        if not value:
+            continue
+        secrets_store.set_credential(key, value)
+        changed.append(key)
+        if key != "USER_ID":
+            field.set_value("")
+    ui.notify(f"Updated: {', '.join(changed)}" if changed else "No changes", type="positive")
+
+
+def _account_menu() -> None:
+    status = secrets_store.credential_status()
+    fields: dict[str, Any] = {}
+    with ui.column().classes("p-3 gap-2").style("min-width:260px"):
+        ui.label("Kite account").classes("font-medium")
+        user_key, user_label = _ACCOUNT_FIELDS[0]
+        fields[user_key] = ui.input(
+            label=user_label, value=secrets_store.get_credential(user_key) or "") \
+            .props("dense")
+        ui.separator()
+        ui.label("Leave a field blank to keep its current value.").classes(MUTED)
+        for key, label in _ACCOUNT_FIELDS[1:]:
+            fields[key] = ui.input(
+                label=f"{label} [{'set' if status[key] else 'MISSING'}]",
+                password=True, password_toggle_button=True).props("dense")
+        ui.button("Save to keyring", icon="save",
+                  on_click=lambda: _save_account_fields(fields)).props("flat")
+
+
 @ui.refreshable
 def _banners() -> None:
     for label, key in (("strategy", "strategy"), ("settings", "settings")):
@@ -1315,6 +1337,11 @@ def index() -> None:
             ui.button("Import / export", icon="import_export", on_click=_show_import_export) \
                 .props("flat color=white") \
                 .tooltip("Download or replace strategy.yaml / settings.yaml directly")
+            account_btn = ui.button(icon="account_circle").props("flat color=white") \
+                .tooltip("Update Kite credentials")
+            with ui.menu().props("no-parent-event") as account_menu:
+                _account_menu()
+            account_btn.on("click", account_menu.open)
 
     with ui.tabs(on_change=on_tab_change).classes("w-full") as tabs:
         for label in TAB_DOC:
