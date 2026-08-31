@@ -990,16 +990,32 @@ def _show_image(name: str) -> None:
     CHART_STATE["image"] = name
     _chart_viewer.refresh()
 
+def _chart_selection_is_stale() -> bool:
+    """True once the currently selected block/image no longer matches what's
+    on disk -- e.g. a finished run deleted and re-rendered a block's charts
+    under new filenames. Checked before refreshing the Charts tab so it only
+    rebuilds (and resets scroll position) when it actually has to."""
+    block = CHART_STATE["block"]
+    if block is None:
+        return False
+    if block not in _chart_blocks():
+        return True
+    images = _chart_images(block)
+    if images:
+        return CHART_STATE["image"] not in {p.name for p in images}
+    days = _chart_windows(block)
+    return bool(days) and CHART_STATE["image"] not in days
+
 def refresh_operations() -> None:
     """Called on a timer by the page so job and engine state stay current."""
     from ui import dashboard
 
     _backtest_status.refresh()
-    # A finished run can delete and re-render a block's charts under new
-    # filenames (the hit/blocked outcome for a day can change between runs),
-    # so a Charts tab left open on a stale selection needs to pick that up
-    # too, not just the status card.
-    _chart_viewer.refresh()
+    # Rebuilding the Charts tab resets its scroll position and flashes the
+    # image, so it's only worth doing once the selection is actually stale,
+    # not on every tick.
+    if _chart_selection_is_stale():
+        _chart_viewer.refresh()
     # Repaint rather than refresh: rebuilding the grid would cancel a drag in
     # progress and close an open editor.
     from live_service import SERVICE
