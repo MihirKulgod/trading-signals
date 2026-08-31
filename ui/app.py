@@ -1000,8 +1000,54 @@ def _set_all_enabled(nodes: CommentedSeq, value: bool) -> None:
     _refresh_editors()
 
 
+# Toggles between ascending/descending on each press, independently for the
+# Definitions and Conditions tabs.
+_SORT_ASCENDING = {"definitions": True, "conditions": True}
+
+
+def _sort_top_level(lst: CommentedSeq, key: str) -> None:
+    ascending = _SORT_ASCENDING[key]
+    lst.sort(key=lambda item: str(item.get("id") or "").lower(), reverse=not ascending)
+    _SORT_ASCENDING[key] = not ascending
+
+
+def _definition_usage() -> dict[str, set]:
+    """Definition id -> ids of the top-level conditions that use it, whether
+    directly or through another definition's own reference."""
+    definitions = DOCS["strategy"].get("definitions") or []
+    conditions = DOCS["strategy"].get("conditions") or []
+    by_id = {d.get("id"): d for d in definitions}
+
+    def walk(spec, seen_specs):
+        if id(spec) in seen_specs:
+            return
+        seen_specs.add(id(spec))
+        if spec.get("condition") == "ref":
+            target = (spec.get("args") or {}).get("target")
+            if target is not None:
+                yield target
+                definition = by_id.get(target)
+                if definition is not None:
+                    yield from walk(definition, seen_specs)
+        for child in condition._condition_children(spec):
+            yield from walk(child, seen_specs)
+
+    usage: dict[str, set] = {}
+    for top in conditions:
+        for target in walk(top, set()):
+            usage.setdefault(target, set()).add(top.get("id"))
+    return usage
+
+
+def _notify_usage(node_id: str, condition_ids: set) -> None:
+    if not condition_ids:
+        ui.notify(f"{node_id} is not used by any condition", type="warning")
+        return
+    ui.notify(f"{node_id} is used in: {', '.join(sorted(condition_ids))}", timeout=8000)
+
+
 def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabled=False,
-                      draggable=False) -> None:
+                      draggable=False, usage_condition_ids: set = None) -> None:
     cond_type = node.get("condition")
     is_combinator = _is_combinator(cond_type)
     type_opts = _with_current(vocabulary.condition_types(), cond_type)
@@ -1024,6 +1070,11 @@ def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabl
                       on_change=lambda e, n=node: _reshape_condition(n, e.value)) \
                 .props("dense").classes("min-w-[150px]")
             _text("id", node, "id").props("dense")
+            if usage_condition_ids is not None:
+                count = len(usage_condition_ids)
+                ui.label(f"Used in {count} condition{'' if count == 1 else 's'}") \
+                    .classes("text-xs text-gray-400 cursor-pointer") \
+                    .on("click", lambda n=node, u=usage_condition_ids: _notify_usage(n.get("id"), u))
             ui.space()
             if is_combinator and _accepts_more_children(cond_type, len(node.get("args") or [])):
                 ui.button(icon="add", on_click=lambda n=node: _add_child(n)) \
@@ -1084,6 +1135,11 @@ def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabl
                 _ref_preview(node)
 
 
+def _sort_and_refresh(lst: CommentedSeq, key: str, tab) -> None:
+    _sort_top_level(lst, key)
+    tab.refresh()
+
+
 @ui.refreshable
 def _definitions_tab() -> None:
     definitions = DOCS["strategy"].setdefault("definitions", CommentedSeq())
@@ -1092,12 +1148,17 @@ def _definitions_tab() -> None:
         ui.button(icon="add", on_click=lambda: _add_top_condition(definitions)) \
             .props("flat dense").tooltip("Add definition")
         _paste_button(lambda: _paste_append(definitions), "Paste definition")
+        ui.button(icon="sort_by_alpha",
+                  on_click=lambda: _sort_and_refresh(definitions, "definitions", _definitions_tab)) \
+            .props("flat dense").tooltip("Sort by id (toggles ascending/descending)")
     ui.label("Shared conditions, referenced from elsewhere via the 'ref' type.").classes(MUTED)
     if len(definitions) == 0:
         ui.label("No definitions yet.").classes(MUTED)
+    usage = _definition_usage()
     with _sortable_column(definitions, 0):
         for idx, definition in enumerate(definitions):
             _condition_editor(definition, depth=0, draggable=True,
+                              usage_condition_ids=usage.get(definition.get("id"), set()),
                               on_remove=lambda dl=definitions, i=idx: _remove_condition(dl, i))
 
 
@@ -1109,6 +1170,9 @@ def _conditions_tab() -> None:
         ui.button(icon="add", on_click=lambda: _add_top_condition(conditions)) \
             .props("flat dense").tooltip("Add top-level condition")
         _paste_button(lambda: _paste_append(conditions), "Paste condition")
+        ui.button(icon="sort_by_alpha",
+                  on_click=lambda: _sort_and_refresh(conditions, "conditions", _conditions_tab)) \
+            .props("flat dense").tooltip("Sort by id (toggles ascending/descending)")
         ui.button("Enable all", on_click=lambda: _set_all_enabled(conditions, True)) \
             .props("flat dense")
         ui.button("Disable all", on_click=lambda: _set_all_enabled(conditions, False)) \
