@@ -512,17 +512,17 @@ def _reshape_condition(node: CommentedMap, new_type: str) -> None:
     if _type_signature(node.get("condition")) != _type_signature(new_type):
         node["args"] = _default_args_for_type(new_type)
     node["condition"] = new_type
-    _refresh_editors()
+    _refresh_node(node)
 
 
-def _set_operand_type(parent: CommentedMap, key: str, new_type: str) -> None:
+def _set_operand_type(parent: CommentedMap, key: str, new_type: str, refresh_node=None) -> None:
     if new_type == "value":
         parent[key] = _default_value_operand()
     elif new_type == "condition":
         parent[key] = _default_condition_operand()
     else:
         parent[key] = _default_reference_operand()
-    _refresh_editors()
+    _refresh_node(refresh_node)
 
 
 def _set_lookback(operand: CommentedMap, value: Any) -> None:
@@ -536,7 +536,7 @@ def _set_lookback(operand: CommentedMap, value: Any) -> None:
 
 def _add_child(node: CommentedMap) -> None:
     node.setdefault("args", CommentedSeq()).append(_default_leaf_condition())
-    _refresh_editors()
+    _refresh_node(node)
 
 
 def _add_top_condition(conditions: CommentedSeq) -> None:
@@ -544,9 +544,9 @@ def _add_top_condition(conditions: CommentedSeq) -> None:
     _refresh_editors()
 
 
-def _remove_condition(parent_list: CommentedSeq, index: int) -> None:
+def _remove_condition(parent_list: CommentedSeq, index: int, refresh_node=None) -> None:
     del parent_list[index]
-    _refresh_editors()
+    _refresh_node(refresh_node)
 
 
 # --- clipboard: copy / cut / paste any condition subtree -------------------
@@ -617,18 +617,18 @@ def _cut_condition(node: CommentedMap, on_remove) -> None:
     on_remove()  # removes the source from its slot and refreshes
 
 
-def _paste_append(lst: CommentedSeq) -> None:
+def _paste_append(lst: CommentedSeq, refresh_node=None) -> None:
     node = copy.deepcopy(STATE["clipboard"])
     node["id"] = _new_id()  # avoid duplicate top-level ids (they name score columns)
     lst.append(node)
-    _refresh_editors()
+    _refresh_node(refresh_node)
 
 
-def _paste_replace(args: CommentedMap, key: str) -> None:
+def _paste_replace(args: CommentedMap, key: str, refresh_node=None) -> None:
     node = copy.deepcopy(STATE["clipboard"])
     node["id"] = _new_id()
     args[key] = node
-    _refresh_editors()
+    _refresh_node(refresh_node)
 
 
 def _paste_button(on_paste, tooltip: str):
@@ -645,7 +645,7 @@ def _toggle_collapsed(node: CommentedMap) -> None:
     coll = STATE.setdefault("collapsed", set())
     key = id(node)
     coll.discard(key) if key in coll else coll.add(key)
-    _refresh_editors()
+    _refresh_node(node)
 
 
 def _walk_condition_nodes(node: Any):
@@ -682,11 +682,24 @@ def _refresh_editors() -> None:
     _conditions_tab.refresh()
 
 
+# Each node gets its own refreshable, created fresh on every render, so
+# rebuilding one node's card never touches its siblings or the other tab.
+_NODE_REFRESHERS: dict[int, Any] = {}
+
+
+def _refresh_node(node) -> None:
+    target = _NODE_REFRESHERS.get(id(node)) if node is not None else None
+    if target is not None:
+        target.refresh()
+    else:
+        _refresh_editors()
+
+
 # --- operand + condition editors -------------------------------------------
 
 
 def _operand_editor(parent: CommentedMap, key: str, label: str, depth: int = 0, *,
-                    force_reference=False) -> None:
+                    force_reference=False, refresh_node=None) -> None:
     op = parent.get(key)
     if not isinstance(op, dict):
         op = _default_reference_operand() if force_reference else _default_value_operand()
@@ -700,7 +713,7 @@ def _operand_editor(parent: CommentedMap, key: str, label: str, depth: int = 0, 
                 ui.badge("reference").props("color=teal")
             else:
                 ui.select(["value", "reference", "condition"], value=op.get("type"), label="type",
-                          on_change=lambda e, p=parent, k=key: _set_operand_type(p, k, e.value)) \
+                          on_change=lambda e, p=parent, k=key: _set_operand_type(p, k, e.value, refresh_node)) \
                     .props("dense").classes("min-w-[130px]")
 
         if op.get("type") == "value":
@@ -709,7 +722,7 @@ def _operand_editor(parent: CommentedMap, key: str, label: str, depth: int = 0, 
                           "value", float(e.value) if e.value is not None else None)) \
                 .props("dense").classes("min-w-[140px]")
         elif op.get("type") == "condition":
-            _nested_condition_editor(op, "input", depth)
+            _nested_condition_editor(op, "input", depth, refresh_node)
         else:
             with ui.row().classes("items-center gap-2 flex-wrap"):
                 _select("instrument_id", vocabulary.instrument_ids(s), op, "instrument_id").props("dense")
@@ -930,7 +943,7 @@ def _show_structure(node: CommentedMap) -> None:
     dialog.open()
 
 
-def _nested_condition_editor(args: CommentedMap, key: str, depth: int) -> None:
+def _nested_condition_editor(args: CommentedMap, key: str, depth: int, refresh_node=None) -> None:
     child = args.get(key)
     if not isinstance(child, dict):
         child = _default_leaf_condition()
@@ -938,15 +951,15 @@ def _nested_condition_editor(args: CommentedMap, key: str, depth: int) -> None:
     with ui.column().classes("w-full gap-1"):
         with ui.row().classes("items-center gap-2"):
             ui.label(key).classes(MUTED)
-            _paste_button(lambda a=args, k=key: _paste_replace(a, k), "Paste as input")
+            _paste_button(lambda a=args, k=key: _paste_replace(a, k, refresh_node), "Paste as input")
         _condition_editor(child, depth + 1)  # required slot -> no remove button
 
 
-def _move_in_list(lst: CommentedSeq, old_index: int, new_index: int) -> None:
+def _move_in_list(lst: CommentedSeq, old_index: int, new_index: int, refresh_node=None) -> None:
     if old_index == new_index or not (0 <= old_index < len(lst)):
         return
     lst.insert(new_index, lst.pop(old_index))
-    _refresh_editors()
+    _refresh_node(refresh_node)
 
 
 # Handles are scoped by item depth so a nested list's handles never match its
@@ -955,11 +968,11 @@ def _handle_class(depth: int) -> str:
     return f"drag-handle-d{depth}"
 
 
-def _sortable_column(lst: CommentedSeq, depth: int):
+def _sortable_column(lst: CommentedSeq, depth: int, refresh_node=None):
     container = ui.column().classes("w-full gap-2")
     container.make_sortable(
         handle=f".{_handle_class(depth)}",
-        on_end=lambda e, target=lst: _move_in_list(target, e.old_index, e.new_index),
+        on_end=lambda e, target=lst, n=refresh_node: _move_in_list(target, e.old_index, e.new_index, n),
     )
     return container
 
@@ -1025,6 +1038,15 @@ def _notify_usage(node_id: str, condition_ids: set) -> None:
 
 def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabled=False,
                       draggable=False, usage_condition_ids: set = None) -> None:
+    @ui.refreshable
+    def _render() -> None:
+        _condition_editor_body(node, depth, on_remove, show_enabled, draggable, usage_condition_ids)
+    _NODE_REFRESHERS[id(node)] = _render
+    _render()
+
+
+def _condition_editor_body(node: CommentedMap, depth: int, on_remove=None, show_enabled=False,
+                           draggable=False, usage_condition_ids: set = None) -> None:
     cond_type = node.get("condition")
     is_combinator = _is_combinator(cond_type)
     type_opts = _with_current(vocabulary.condition_types(), cond_type)
@@ -1056,7 +1078,7 @@ def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabl
             if is_combinator and _accepts_more_children(cond_type, len(node.get("args") or [])):
                 ui.button(icon="add", on_click=lambda n=node: _add_child(n)) \
                     .props("flat dense").tooltip("Add child")
-                _paste_button(lambda n=node: _paste_append(n.setdefault("args", CommentedSeq())),
+                _paste_button(lambda n=node: _paste_append(n.setdefault("args", CommentedSeq()), n),
                               "Paste as child")
             ui.button(icon="account_tree", on_click=lambda n=node: _show_structure(n)) \
                 .props("flat dense").tooltip("View this block's full structure")
@@ -1087,16 +1109,17 @@ def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabl
             children = node.setdefault("args", CommentedSeq())
             if len(children) == 0:
                 ui.label("(no children yet — add at least one)").classes(MUTED)
-            with _sortable_column(children, depth + 1):
+            with _sortable_column(children, depth + 1, node):
                 for c_idx, child in enumerate(children):
                     _condition_editor(child, depth + 1, draggable=True,
-                                      on_remove=lambda cl=children, ci=c_idx: _remove_condition(cl, ci))
+                                      on_remove=lambda cl=children, ci=c_idx, n=node:
+                                          _remove_condition(cl, ci, n))
         else:
             args = node.setdefault("args", CommentedMap())
             for a in sorted(_specs_for(cond_type), key=lambda a: _KIND_ORDER.get(a["kind"], 1)):
                 if a["kind"] in ("operand", "reference"):
                     _operand_editor(args, a["name"], a["name"], depth,
-                                    force_reference=(a["kind"] == "reference"))
+                                    force_reference=(a["kind"] == "reference"), refresh_node=node)
                 elif a["kind"] == "int":
                     _int_field(args, a["name"])
                 elif a["kind"] == "float":
@@ -1108,7 +1131,7 @@ def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabl
                 elif a["kind"] == "definition_id":
                     _definition_id_field(args, a["name"])
                 elif a["kind"] == "condition":
-                    _nested_condition_editor(args, a["name"], depth)
+                    _nested_condition_editor(args, a["name"], depth, node)
 
             if cond_type == "ref":
                 _ref_preview(node)
