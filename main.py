@@ -102,8 +102,10 @@ def run_live_headless() -> int:
 
 def run_app() -> int:
     from nicegui import ui
+    from ui import operations
     from ui.app import index  # noqa: F401  (registers the page)
 
+    operations.mount_charts()
     # A frozen build opens its own desktop window (native=True auto-picks a
     # free port); running from source keeps the plain browser-tab workflow,
     # since that's what every dev tool here drives.
