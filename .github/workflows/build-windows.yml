@@ -32,6 +32,8 @@ jobs:
             --add-data "${nicegui};nicegui" `
             --copy-metadata pandas-ta-openbb `
             --copy-metadata keyring `
+            --collect-all pythonnet `
+            --collect-all clr_loader `
             main.py
 
       - name: Zip the build
