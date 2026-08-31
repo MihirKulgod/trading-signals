@@ -37,8 +37,16 @@ def add_derived_columns(df):
     session_atr: ATR whose True Range never spans a session boundary. Days are
     concatenated before indicators run, so at each day's first bar the standard
     True Range measures the overnight gap rather than that bar's range.
+
+    body/upper_wick/lower_wick: plain OHLC arithmetic, in raw points -- a
+    condition normalizes them the same way it would any other column.
     """
     df["time_of_day"] = df.index.hour * 60 + df.index.minute
+    df["body"] = df["close"] - df["open"]
+    upper_body = df[["open", "close"]].max(axis=1)
+    lower_body = df[["open", "close"]].min(axis=1)
+    df["upper_wick"] = df["high"] - upper_body
+    df["lower_wick"] = lower_body - df["low"]
 
     true_range = ta.true_range(df["high"], df["low"], df["close"])
     if true_range is None:

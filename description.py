@@ -20,6 +20,13 @@ from condition import CONDITION_REGISTRY
 
 INDENT = "    "
 
+# Leaf condition types with no children of their own -- a self-contained
+# formula, as opposed to a combinator/window/kernel that wraps other blocks.
+ATOMIC_TYPES = {
+    "above", "below", "compare", "normalized_spread",
+    "increasing", "decreasing", "recent_crossover_upward", "session_minute",
+}
+
 # Tokens that read as acronyms rather than words when an id is turned into a
 # title. Anything shaped like a letter followed by digits (t60, c01, s1) is
 # upper-cased too, so only genuine words are left to capitalise.
@@ -31,6 +38,7 @@ _INSTRUMENT_NAMES = {"nifty_spot": "Spot", "nifty_fut": "Future"}
 _BASE_COLUMNS = {
     "open": "Open", "high": "High", "low": "Low", "close": "Close",
     "volume": "Volume", "session_atr": "Session ATR", "time_of_day": "Time of Day",
+    "body": "Body", "upper_wick": "Upper Wick", "lower_wick": "Lower Wick",
 }
 
 _KIND_LABELS = {
@@ -155,12 +163,6 @@ class Describer:
             return text
         return str(operand)
 
-    def _candle_phrase(self, candle, tail: str) -> str:
-        """'*Spot* T15 **Candle Body** (t-1)' -- the part of the candle being
-        measured belongs in the same bold span as 'Candle'."""
-        lookback = self._lookback_of(candle)
-        return self.operand(candle, annotate=bool(lookback), field_override=f"Candle {tail}")
-
     def _is_session_minute(self, operand) -> bool:
         return (isinstance(operand, dict) and operand.get("type") == "condition"
                 and isinstance(operand.get("input"), dict)
@@ -191,6 +193,72 @@ class Describer:
             return f" {sign} {scale}"
         return f" {sign} {magnitude} * {scale}"
 
+    # --- quick formula (atomic blocks only) ---------------------------------
+    #
+    # A short, plain-text formula for a childless block's header -- no
+    # instrument or timeframe, since the point is reading a block's meaning
+    # at a glance without expanding it or tracking which argument is which.
+    # Every operand always carries its (t)/(t-n) marker, even at (t), since
+    # without the surrounding instrument/timeframe context there's nothing
+    # else to signal "this one's current".
+
+    def _quick_operand(self, operand) -> str:
+        if operand is None:
+            return "?"
+        if not isinstance(operand, dict):
+            return _number(operand)
+        kind = operand.get("type")
+        if kind == "value":
+            return _number(operand.get("value"))
+        if kind == "condition":
+            return self.quick_formula(operand.get("input")) or "?"
+        if kind == "reference":
+            column = operand.get("col_name")
+            label = self.columns.get(column, readable_id(column)) if column else "Candle"
+            return f"{label} {self._lookback_suffix(operand.get('lookback') or 0)}"
+        return str(operand)
+
+    def _quick_offset(self, c, x) -> str:
+        if x in (None, 0, 0.0):
+            return ""
+        magnitude = self._quick_operand(c)
+        sign = "-" if float(x) < 0 else "+"
+        scale = _number(abs(float(x)))
+        if magnitude == "1":
+            return f" {sign} {scale}"
+        return f" {sign} {magnitude} * {scale}"
+
+    def quick_formula(self, spec) -> str:
+        """None for anything with children; a short formula for a leaf."""
+        if not isinstance(spec, dict) or spec.get("condition") not in ATOMIC_TYPES:
+            return None
+        cond_type = spec.get("condition")
+        args = spec.get("args") or {}
+
+        if cond_type == "session_minute":
+            return "Time of day"
+        if cond_type in ("above", "below"):
+            symbol = ">" if cond_type == "above" else "<"
+            a_raw, b_raw = args.get("a"), args.get("b")
+            if self._is_session_minute(a_raw) and isinstance(b_raw, dict) and b_raw.get("type") == "value":
+                return f"Time of day {symbol} {_clock(b_raw.get('value'))}"
+            if self._is_session_minute(b_raw) and isinstance(a_raw, dict) and a_raw.get("type") == "value":
+                return f"{_clock(a_raw.get('value'))} {symbol} Time of day"
+            return f"{self._quick_operand(a_raw)} {symbol} {self._quick_operand(b_raw)}"
+        if cond_type == "normalized_spread":
+            return f"{self._quick_operand(args.get('a'))} - {self._quick_operand(args.get('b'))}"
+        if cond_type == "compare":
+            symbol = ">" if args.get("direction") == ">" else "<"
+            a, b = self._quick_operand(args.get("a")), self._quick_operand(args.get("b"))
+            return f"{a} {symbol} {b}{self._quick_offset(args.get('c'), args.get('x'))}"
+        if cond_type in ("increasing", "decreasing"):
+            verb = "rising" if cond_type == "increasing" else "falling"
+            return f"{self._quick_operand(args.get('col'))} {verb}"
+        if cond_type == "recent_crossover_upward":
+            a, b = self._quick_operand(args.get("a")), self._quick_operand(args.get("b"))
+            return f"{a} crosses above {b}"
+        return None
+
     # --- leaf expressions --------------------------------------------------
 
     def _comparison(self, spec: dict, symbol: str) -> str:
@@ -217,11 +285,6 @@ class Describer:
             return f"Reference: **{readable_id(args.get('target'))}**"
         if cond_type == "session_minute":
             return "**Time of day**"
-        if cond_type == "candle_body":
-            return self._candle_phrase(args.get("candle"), "Body")
-        if cond_type == "candle_wick":
-            side = str(args.get("side", "")).capitalize()
-            return self._candle_phrase(args.get("candle"), f"{side} Wick")
         if cond_type == "above":
             return self._comparison(spec, ">")
         if cond_type == "below":

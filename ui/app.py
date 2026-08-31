@@ -464,19 +464,6 @@ def _default_reference_operand() -> CommentedMap:
     ])
 
 
-def _default_candle_operand() -> CommentedMap:
-    s = DOCS["strategy"]
-    ids = vocabulary.instrument_ids(s)
-    tts = vocabulary.timeframe_types(s)
-    tfs = vocabulary.all_timeframes(s)
-    return _new_map([
-        ("type", "reference"),
-        ("instrument_id", ids[0] if ids else ""),
-        ("timeframe_type", tts[0] if tts else "intraday"),
-        ("timeframe", tfs[0] if tfs else "1min"),
-    ])
-
-
 def _default_condition_operand() -> CommentedMap:
     return _new_map([("type", "condition"), ("input", _default_leaf_condition())])
 
@@ -488,9 +475,7 @@ def _default_args_for_type(cond_type: str) -> Any:
         return CommentedSeq()
     m = CommentedMap()
     for a in specs:
-        if a["kind"] == "candle_reference":
-            m[a["name"]] = _default_candle_operand()
-        elif a["kind"] in ("operand", "reference"):
+        if a["kind"] in ("operand", "reference"):
             # Default operands to references (a value default of 0 would risk a
             # divide-by-zero normalizer); the user can switch to a literal value.
             m[a["name"]] = _default_reference_operand()
@@ -687,7 +672,7 @@ def _collapse_all() -> None:
 
 # Render simple scalar fields (numbers) first, larger nested fields last.
 _KIND_ORDER = {"int": 0, "float": 0, "bool": 0, "choice": 0, "definition_id": 0,
-               "operand": 1, "reference": 1, "candle_reference": 1, "condition": 2}
+               "operand": 1, "reference": 1, "condition": 2}
 
 
 # Definitions and Conditions share the same editor helpers, so a structural
@@ -701,24 +686,17 @@ def _refresh_editors() -> None:
 
 
 def _operand_editor(parent: CommentedMap, key: str, label: str, depth: int = 0, *,
-                    force_reference=False, hide_col_name=False) -> None:
+                    force_reference=False) -> None:
     op = parent.get(key)
     if not isinstance(op, dict):
-        if hide_col_name:
-            op = _default_candle_operand()
-        elif force_reference:
-            op = _default_reference_operand()
-        else:
-            op = _default_value_operand()
+        op = _default_reference_operand() if force_reference else _default_value_operand()
         parent[key] = op
 
     s = DOCS["strategy"]
     with ui.card().classes("w-full bg-gray-50"):
         with ui.row().classes("items-center gap-2"):
             ui.label(label).classes("font-medium")
-            if hide_col_name:
-                ui.badge("candle").props("color=teal")
-            elif force_reference:
+            if force_reference:
                 ui.badge("reference").props("color=teal")
             else:
                 ui.select(["value", "reference", "condition"], value=op.get("type"), label="type",
@@ -738,9 +716,8 @@ def _operand_editor(parent: CommentedMap, key: str, label: str, depth: int = 0, 
                 _select("timeframe_type", vocabulary.timeframe_types(s), op, "timeframe_type",
                         with_input=True).props("dense")
                 _select("timeframe", vocabulary.all_timeframes(s), op, "timeframe").props("dense")
-                if not hide_col_name:
-                    _select("col_name", vocabulary.alias_names(s), op, "col_name",
-                            with_input=True).props("dense")
+                _select("col_name", vocabulary.alias_names(s), op, "col_name",
+                        with_input=True).props("dense")
                 ui.number(label="lookback", value=op.get("lookback", 0), precision=0, format="%d",
                           on_change=lambda e, o=op: _set_lookback(o, e.value)) \
                     .props("dense").classes("min-w-[110px]")
@@ -814,7 +791,7 @@ def _node_detail(node) -> str:
         if a["kind"] in ("int", "float", "bool", "choice", "definition_id"):
             if a["name"] in args:
                 parts.append(f"{a['name']}={args[a['name']]}")
-        elif a["kind"] in ("operand", "reference", "candle_reference"):
+        elif a["kind"] in ("operand", "reference"):
             summary = _operand_summary(args.get(a["name"]))
             if summary:
                 parts.append(f"{a['name']}: {summary}")
@@ -843,7 +820,7 @@ def _preview_rows(node, depth: int = 0, seen: frozenset = frozenset()) -> list[d
             value = args.get(a["name"])
             if a["kind"] == "condition":
                 rows += _preview_rows(value, depth + 1, seen)
-            elif a["kind"] in ("operand", "reference", "candle_reference") \
+            elif a["kind"] in ("operand", "reference") \
                     and isinstance(value, dict) and value.get("type") == "condition":
                 rows += _preview_rows(value.get("input"), depth + 1, seen)
     return rows
@@ -924,7 +901,7 @@ def _structure_nodes(node, seen: frozenset = frozenset(), path: tuple = ("root",
             value = args.get(spec["name"])
             if spec["kind"] == "condition":
                 children += _structure_nodes(value, seen, path + (spec["name"],))
-            elif spec["kind"] in ("operand", "reference", "candle_reference") \
+            elif spec["kind"] in ("operand", "reference") \
                     and isinstance(value, dict) and value.get("type") == "condition":
                 children += _structure_nodes(value.get("input"), seen, path + (spec["name"],))
 
@@ -1098,6 +1075,11 @@ def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabl
                 ui.button(icon="delete", on_click=lambda cb=on_remove: cb()) \
                     .props("flat dense color=negative")
 
+        if cond_type in description.ATOMIC_TYPES:
+            formula = description.Describer(DOCS["strategy"]).quick_formula(node)
+            if formula:
+                ui.label(formula).classes("text-xl font-semibold")
+
         if collapsed:
             return
 
@@ -1112,10 +1094,7 @@ def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabl
         else:
             args = node.setdefault("args", CommentedMap())
             for a in sorted(_specs_for(cond_type), key=lambda a: _KIND_ORDER.get(a["kind"], 1)):
-                if a["kind"] == "candle_reference":
-                    _operand_editor(args, a["name"], a["name"], depth,
-                                    force_reference=True, hide_col_name=True)
-                elif a["kind"] in ("operand", "reference"):
+                if a["kind"] in ("operand", "reference"):
                     _operand_editor(args, a["name"], a["name"], depth,
                                     force_reference=(a["kind"] == "reference"))
                 elif a["kind"] == "int":

@@ -271,34 +271,6 @@ class Compare(Condition):
         return [op for op in (self.a, self.b, self.c, self.normalizer)
                 if isinstance(op, Condition)]
 
-class CandleWick(Condition):
-    def __init__(self, id, candle: dict, side, normalizer):
-        super().__init__(id)
-        self.candle, self.side, self.normalizer = candle, side, normalizer
-
-    def evaluate(self, ctx: MarketContext) -> float:
-        def col(name):
-            src = dict(self.candle)
-            src["col_name"] = name
-            return ctx.get(src)
-        open_, high, low, close = col("open"), col("high"), col("low"), col("close")
-        if self.side == "upper":
-            wick = high - max(open_, close)
-        else:
-            wick = min(open_, close) - low
-        return wick / resolve_operand(ctx, self.normalizer)
-
-    def sub_conditions(self):
-        return [self.normalizer] if isinstance(self.normalizer, Condition) else []
-
-class CandleBody(NormalizedSpread):
-    def __init__(self, id, candle: dict, normalizer):
-        a = dict(candle)
-        a["col_name"] = "close"
-        b = dict(candle)
-        b["col_name"] = "open"
-        super().__init__(id, a, b, normalizer)
-
 class Kernel(Condition):
     def __init__(self, id, condition: Condition, center=0.0, width=1.0, peak=1.0, floor=0.0, sharpness=1.0):
         super().__init__(id)
@@ -495,13 +467,6 @@ CONDITION_REGISTRY: dict[str, ConditionSpec] = {
         ArgSpec("x", "float"), ArgSpec("direction", "choice", options=("<", ">")),
         ArgSpec("a", "operand"), ArgSpec("b", "operand"), ArgSpec("c", "operand"),
         ArgSpec("normalizer", "operand"))),
-
-    "candle_body": ConditionSpec(CandleBody, (
-        ArgSpec("candle", "candle_reference"), ArgSpec("normalizer", "operand"))),
-
-    "candle_wick": ConditionSpec(CandleWick, (
-        ArgSpec("side", "choice", options=("upper", "lower")),
-        ArgSpec("candle", "candle_reference"), ArgSpec("normalizer", "operand"))),
 
     "kernel": ConditionSpec(Kernel, (
         ArgSpec("input", "condition"),
@@ -735,7 +700,7 @@ def _condition_children(spec: dict) -> list:
             child = args.get(arg.name)
             if child is not None:
                 children.append(child)
-        elif arg.kind in ("operand", "reference", "candle_reference"):
+        elif arg.kind in ("operand", "reference"):
             nested = _nested_condition(args.get(arg.name))
             if nested is not None:
                 children.append(nested)
@@ -759,12 +724,19 @@ def is_time_gate(spec: dict, definitions: list, seen: frozenset = frozenset()) -
 
 # Types with no inherent up/down meaning of their own; reversal only needs to
 # recurse into whatever they wrap (a combinator's children, a window's input,
-# a kernel/multiply/boost's nested condition). candle_body has no direction
-# either -- the wrapping above/below + its literal threshold carries that.
+# a kernel/multiply/boost's nested condition).
 _STRUCTURAL_TYPES = {
     "and", "or", "not", "sequential", "exists_in_window", "for_all_in_window",
-    "kernel", "multiply", "boost", "session_minute", "candle_body",
+    "kernel", "multiply", "boost", "session_minute",
 }
+
+_WICK_FLIP = {"upper_wick": "lower_wick", "lower_wick": "upper_wick"}
+
+def _wick_operand(operand):
+    """A plain reference to the upper/lower wick column, if this is one."""
+    if isinstance(operand, dict) and operand.get("col_name") in _WICK_FLIP:
+        return operand
+    return None
 
 def reverse_spec(spec: dict, definitions: list) -> None:
     """Flip `spec`'s directional meaning in place (Up <-> Down). `definitions`
@@ -806,14 +778,13 @@ def reverse_spec(spec: dict, definitions: list) -> None:
     if cond_type in ("above", "below"):
         args = spec["args"]
         a, b = args.get("a"), args.get("b")
-        inner_a, inner_b = _nested_condition(a), _nested_condition(b)
         # A wick's magnitude threshold doesn't flip -- only which side of the
         # candle it measures does, so this bypasses the outer swap entirely.
-        wick = inner_a if (inner_a or {}).get("condition") == "candle_wick" else \
-               inner_b if (inner_b or {}).get("condition") == "candle_wick" else None
+        wick = _wick_operand(a) or _wick_operand(b)
         if wick is not None:
-            reverse_spec(wick, definitions)
+            wick["col_name"] = _WICK_FLIP[wick["col_name"]]
             return
+        inner_a, inner_b = _nested_condition(a), _nested_condition(b)
         spec["condition"] = "below" if cond_type == "above" else "above"
         if _is_rsi_operand(a) and _is_literal_value(b):
             b["value"] = 100.0 - float(b["value"])
@@ -839,14 +810,6 @@ def reverse_spec(spec: dict, definitions: list) -> None:
             inner = _nested_condition(args.get(key))
             if inner is not None:
                 reverse_spec(inner, definitions)
-        return
-
-    if cond_type == "candle_wick":
-        side = spec["args"].get("side")
-        if side == "upper":
-            spec["args"]["side"] = "lower"
-        elif side == "lower":
-            spec["args"]["side"] = "upper"
         return
 
     if cond_type in ("increasing", "decreasing"):
