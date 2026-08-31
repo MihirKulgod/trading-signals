@@ -1078,7 +1078,7 @@ def _condition_editor(node: CommentedMap, depth: int, on_remove=None, show_enabl
         if cond_type in description.ATOMIC_TYPES:
             formula = description.Describer(DOCS["strategy"]).quick_formula(node)
             if formula:
-                ui.label(formula).classes("text-xl font-semibold")
+                ui.label(formula).classes("text-lg font-medium")
 
         if collapsed:
             return
