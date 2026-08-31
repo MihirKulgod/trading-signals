@@ -591,14 +591,13 @@ def _show_description(node: CommentedMap) -> None:
         ui.label("References are named, not expanded; export the strategy to read them.") \
             .classes(MUTED)
         with ui.element("div").classes("w-full overflow-auto").style("max-height:70vh"):
-            # Rules run long; wrap them instead of clipping off the right edge.
-            ui.code(text, language=None).classes("w-full description-text")
+            ui.markdown(text).classes("w-full")
     dialog.open()
 
 
 def _export_description() -> None:
-    """Write the whole strategy out as prose, definitions first."""
-    path = app_paths.output_dir() / "strategy_description.txt"
+    """Write the whole strategy out as Markdown, definitions first."""
+    path = app_paths.output_dir() / "strategy_description.md"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(description.describe_strategy(DOCS["strategy"]), encoding="utf-8")
@@ -1295,9 +1294,6 @@ def _banners() -> None:
 
 @ui.page("/")
 def index() -> None:
-    # Rules run long, and ui.code renders a <pre> that would otherwise clip
-    # them; Tailwind's arbitrary variants can't reach it in a prebuilt sheet.
-    ui.add_css(".description-text pre { white-space: pre-wrap; word-break: break-word; }")
     ui.add_css(_IMPORT_EXPORT_CSS)
     _load_docs()
     _collapse_all()
@@ -1333,7 +1329,7 @@ def index() -> None:
                 .tooltip("Re-read both config files, discarding unsaved edits")
             ui.button("Export description", icon="description", on_click=_export_description) \
                 .props("flat color=white") \
-                .tooltip("Write the whole strategy to output/strategy_description.txt")
+                .tooltip("Write the whole strategy to output/strategy_description.md")
             ui.button("Import / export", icon="import_export", on_click=_show_import_export) \
                 .props("flat color=white") \
                 .tooltip("Download or replace strategy.yaml / settings.yaml directly")

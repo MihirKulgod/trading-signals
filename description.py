@@ -1,14 +1,19 @@
 """
-Human-readable descriptions of condition blocks.
+Human-readable descriptions of condition blocks, rendered as Markdown.
 
 Renders a raw condition spec (the dict shape used in strategy.yaml) as prose
 close to how the combinations doc states its rules, e.g.
 
-    Spot T15 MACD Line (t) > Spot T15 MACD Line (t-1) + Spot T15 ATR * 0.1
+    *Spot* T15 **MACD Line** (t) > *Spot* T15 **MACD Line** (t-1) + *Spot* T15 **ATR** * `0.1`
 
-References are never expanded -- a ref prints as "Reference: <name>" -- so a
-shared definition is spelled out once, under the Definitions section, instead
-of being repeated at every use.
+Instrument names (Spot/Future) are italicised -- context, not the point --
+while indicator/column names are bold, since those are what a reader is
+actually scanning for. Exact numbers and clock times are code-formatted so
+they stand out as literal values rather than prose.
+
+References are never expanded -- a ref prints as "Reference: **<name>**" --
+so a shared definition is spelled out once, under the Definitions section,
+instead of being repeated at every use.
 """
 
 from condition import CONDITION_REGISTRY
@@ -68,6 +73,11 @@ def _number(value) -> str:
     return f"{value:g}"
 
 
+def _code(text) -> str:
+    """A literal value -- number, clock time -- set apart as code."""
+    return f"`{text}`"
+
+
 def _clock(minutes) -> str:
     total = int(minutes)
     return f"{total // 60:02d}:{total % 60:02d}"
@@ -112,47 +122,44 @@ class Describer:
     def _lookback_suffix(self, lookback) -> str:
         return "(t)" if not lookback else f"(t-{int(lookback)})"
 
-    def operand(self, operand, annotate: bool = False) -> str:
+    def operand(self, operand, annotate: bool = False, field_override: str = None) -> str:
         """
         A single value in an expression. ``annotate`` forces the (t)/(t-n)
         marker on; without it the marker appears only where it carries
         information, i.e. when the operand actually reaches into the past.
+        ``field_override`` lets a caller (e.g. a candle phrase) put its own
+        label -- "Candle Body" -- in the bold slot instead of the column name.
         """
         if operand is None:
             return "?"
         if not isinstance(operand, dict):
-            return _number(operand)
+            return _code(_number(operand))
         kind = operand.get("type")
         if kind == "value":
-            return _number(operand.get("value"))
+            return _code(_number(operand.get("value")))
         if kind == "condition":
             return self.inline(operand.get("input"))
         if kind == "reference":
-            parts = [self.instruments.get(operand.get("instrument_id"),
-                                          readable_id(operand.get("instrument_id"))),
-                     self._timeframe(operand.get("timeframe"))]
+            instrument = self.instruments.get(operand.get("instrument_id"),
+                                              readable_id(operand.get("instrument_id")))
             column = operand.get("col_name")
-            if column:
-                parts.append(self.columns.get(column, readable_id(column)))
-            else:
-                parts.append("Candle")
+            field = field_override or (self.columns.get(column, readable_id(column))
+                                       if column else "Candle")
+            parts = [f"*{instrument}*" if instrument else "",
+                     self._timeframe(operand.get("timeframe")),
+                     f"**{field}**"]
+            text = " ".join(part for part in parts if part)
             lookback = operand.get("lookback") or 0
             if annotate or lookback:
-                parts.append(self._lookback_suffix(lookback))
-            return " ".join(part for part in parts if part)
+                text += f" {self._lookback_suffix(lookback)}"
+            return text
         return str(operand)
 
     def _candle_phrase(self, candle, tail: str) -> str:
-        """
-        'Spot T15 Candle Body (t-1)' -- the part of the candle being measured
-        belongs beside 'Candle', so the time marker stays at the end.
-        """
+        """'*Spot* T15 **Candle Body** (t-1)' -- the part of the candle being
+        measured belongs in the same bold span as 'Candle'."""
         lookback = self._lookback_of(candle)
-        head = self.operand(candle, annotate=False)
-        if lookback:
-            head = head.removesuffix(f" {self._lookback_suffix(lookback)}")
-            return f"{head} {tail} {self._lookback_suffix(lookback)}"
-        return f"{head} {tail}"
+        return self.operand(candle, annotate=bool(lookback), field_override=f"Candle {tail}")
 
     def _is_session_minute(self, operand) -> bool:
         return (isinstance(operand, dict) and operand.get("type") == "condition"
@@ -179,8 +186,8 @@ class Describer:
             return ""
         magnitude = self.operand(c)
         sign = "-" if float(x) < 0 else "+"
-        scale = _number(abs(float(x)))
-        if magnitude in ("1", "1.0"):
+        scale = _code(_number(abs(float(x))))
+        if magnitude == _code("1"):
             return f" {sign} {scale}"
         return f" {sign} {magnitude} * {scale}"
 
@@ -192,10 +199,10 @@ class Describer:
         # A clock gate reads far better as a time than as minutes-since-midnight.
         if self._is_session_minute(a_raw) and isinstance(b_raw, dict) \
                 and b_raw.get("type") == "value":
-            return f"Time of day {symbol} {_clock(b_raw.get('value'))}"
+            return f"**Time of day** {symbol} {_code(_clock(b_raw.get('value')))}"
         if self._is_session_minute(b_raw) and isinstance(a_raw, dict) \
                 and a_raw.get("type") == "value":
-            return f"{_clock(a_raw.get('value'))} {symbol} Time of day"
+            return f"{_code(_clock(a_raw.get('value')))} {symbol} **Time of day**"
         a, b = self._pair(a_raw, b_raw)
         return f"{a} {symbol} {b}"
 
@@ -207,9 +214,9 @@ class Describer:
         args = spec.get("args") or {}
 
         if cond_type == "ref":
-            return f"Reference: {readable_id(args.get('target'))}"
+            return f"Reference: **{readable_id(args.get('target'))}**"
         if cond_type == "session_minute":
-            return "Time of day"
+            return "**Time of day**"
         if cond_type == "candle_body":
             return self._candle_phrase(args.get("candle"), "Body")
         if cond_type == "candle_wick":
@@ -230,16 +237,16 @@ class Describer:
             verb = "rising" if cond_type == "increasing" else "falling"
             span = int(args.get("lookback") or 1)
             candles = "candle" if span == 1 else "candles"
-            return f"{self.operand(args.get('col'))} is {verb} over {span} {candles}"
+            return f"{self.operand(args.get('col'))} is *{verb}* over {span} {candles}"
         if cond_type == "recent_crossover_upward":
             a, b = self.operand(args.get("a")), self.operand(args.get("b"))
             return f"{a} crossed above {b} within the last {int(args.get('window') or 0)} candles"
         if cond_type == "multiply":
-            return f"{_number(args.get('x'))} * ({self.inline(args.get('input'))})"
+            return f"{_code(_number(args.get('x')))} * ({self.inline(args.get('input'))})"
         if cond_type == "not":
             children = args if isinstance(args, list) else []
             inner = self.inline(children[0]) if children else "?"
-            return f"NOT ({inner})"
+            return f"**NOT** ({inner})"
         if cond_type in ("and", "or"):
             joiner = " AND " if cond_type == "and" else " OR "
             children = args if isinstance(args, list) else []
@@ -259,9 +266,9 @@ class Describer:
                 if arg.kind in ("operand", "reference", "candle_reference"):
                     parts.append(f"{arg.name}: {self.operand(args[arg.name])}")
                 elif arg.kind != "condition":
-                    parts.append(f"{arg.name}={_number(args[arg.name])}")
+                    parts.append(f"{arg.name}={_code(_number(args[arg.name]))}")
         detail = ", ".join(parts)
-        return f"{readable_id(cond_type)} ({detail})" if detail else readable_id(cond_type)
+        return f"**{readable_id(cond_type)}** ({detail})" if detail else f"**{readable_id(cond_type)}**"
 
     # --- block structure ---------------------------------------------------
 
@@ -271,68 +278,71 @@ class Describer:
         scope = "" if args.get("same_day", True) is not False \
             else ", reaching into the previous session if needed"
         if width == 1:
-            return f"In the last closed candle{scope}:"
-        return f"In {quantifier} of the last {width} closed candles{scope}:"
+            return f"**In the last closed candle**{scope}:"
+        return f"**In {quantifier} of the last {width} closed candles**{scope}:"
 
-    def lines(self, spec, depth: int = 0) -> list[str]:
-        """The block as indented lines: combinators nest, leaves stay inline."""
+    def lines(self, spec, depth: int = 1) -> list[str]:
+        """The block as a nested Markdown list: combinators nest, leaves are
+        list items. depth=1 is the top of the list (no indent)."""
+        pad = INDENT * (depth - 1)
         if not isinstance(spec, dict):
-            return [f"{INDENT * depth}?"]
-        pad = INDENT * depth
+            return [f"{pad}- ?"]
         cond_type = spec.get("condition")
         args = spec.get("args")
 
         if cond_type in ("and", "or", "sequential"):
-            headers = {"and": "All of:", "or": "Any of:",
-                       "sequential": "In order, each step gating the next:"}
-            out = [f"{pad}{headers[cond_type]}"]
+            headers = {"and": "**All of:**", "or": "**Any of:**",
+                       "sequential": "**In order, each step gating the next:**"}
+            out = [f"{pad}- {headers[cond_type]}"]
             for child in args or []:
                 out += self.lines(child, depth + 1)
             return out
 
         if cond_type == "not":
             children = args if isinstance(args, list) else []
-            out = [f"{pad}NOT:"]
+            out = [f"{pad}- **NOT:**"]
             for child in children:
                 out += self.lines(child, depth + 1)
             return out
 
         if cond_type in ("exists_in_window", "for_all_in_window"):
             quantifier = "at least one" if cond_type == "exists_in_window" else "every one"
-            out = [f"{pad}{self._window_header(spec, quantifier)}"]
+            out = [f"{pad}- {self._window_header(spec, quantifier)}"]
             out += self.lines((args or {}).get("input"), depth + 1)
             return out
 
         if cond_type == "boost":
-            out = [f"{pad}Boost (k={_number((args or {}).get('k'))}) -- base:"]
+            k = _code(_number((args or {}).get("k")))
+            out = [f"{pad}- **Boost** (k={k}) -- base:"]
             out += self.lines((args or {}).get("base"), depth + 1)
-            out.append(f"{pad}scaled up by:")
+            out.append(f"{pad}- scaled up by:")
             out += self.lines((args or {}).get("bonus"), depth + 1)
             return out
 
         if cond_type == "kernel":
-            detail = ", ".join(f"{key}={_number((args or {}).get(key))}"
+            detail = ", ".join(f"{key}={_code(_number((args or {}).get(key)))}"
                                for key in ("center", "width", "peak", "floor", "sharpness")
                                if (args or {}).get(key) is not None)
-            out = [f"{pad}Kernel ({detail}) applied to:"]
+            out = [f"{pad}- **Kernel** ({detail}) applied to:"]
             out += self.lines((args or {}).get("input"), depth + 1)
             return out
 
         if cond_type == "multiply":
-            out = [f"{pad}{_number((args or {}).get('x'))} times:"]
+            factor = _code(_number((args or {}).get("x")))
+            out = [f"{pad}- {factor} times:"]
             out += self.lines((args or {}).get("input"), depth + 1)
             return out
 
-        return [f"{pad}{self.inline(spec)}"]
+        return [f"{pad}- {self.inline(spec)}"]
 
     def block(self, spec: dict) -> str:
-        """One block: its title, then its logic."""
+        """One block: its title as a heading, then its logic as a list."""
         if not isinstance(spec, dict):
             return ""
-        title = readable_id(spec.get("id"))
+        title = f"### {readable_id(spec.get('id'))}"
         if spec.get("enabled") is False:
-            title += "  (disabled)"
-        return "\n".join([title] + self.lines(spec, 1))
+            title += " *(disabled)*"
+        return "\n".join([title, ""] + self.lines(spec, 1))
 
 
 def describe_block(spec: dict, strategy: dict = None) -> str:
@@ -345,17 +355,18 @@ def describe_strategy(strategy: dict) -> str:
     them, so a reference is always explained before it is relied on.
     """
     describer = Describer(strategy)
-    out = [str(strategy.get("name") or "Strategy")]
+    out = [f"# {strategy.get('name') or 'Strategy'}"]
     if strategy.get("description"):
-        out.append(str(strategy["description"]))
+        out += ["", f"*{strategy['description']}*"]
 
-    for heading, key in (("DEFINITIONS", "definitions"), ("CONDITIONS", "conditions")):
+    for heading, key in (("Definitions", "definitions"), ("Conditions", "conditions")):
         blocks = strategy.get(key) or []
-        out += ["", heading, "=" * len(heading), ""]
+        out += ["", f"## {heading}"]
         if not blocks:
-            out.append(f"(no {key})")
+            out += ["", f"*(no {key})*"]
             continue
-        for index, spec in enumerate(blocks, start=1):
-            out.append(f"{index}. {describer.block(spec)}")
-            out.append("")
+        for spec in blocks:
+            out += ["", describer.block(spec), "", "---"]
+    if out[-1] == "---":
+        out.pop()
     return "\n".join(out).rstrip() + "\n"
