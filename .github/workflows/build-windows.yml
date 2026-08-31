@@ -32,9 +32,17 @@ jobs:
             --add-data "${nicegui};nicegui" `
             --copy-metadata pandas-ta-openbb `
             --copy-metadata keyring `
-            --collect-all pythonnet `
-            --collect-all clr_loader `
             main.py
+
+      - name: Trust the .NET assemblies pythonnet loads
+        # A zip downloaded from a release carries Windows' "Mark of the Web",
+        # which the legacy .NET Framework CLR (pythonnet's netfx backend)
+        # refuses to load from by default -- this is what crashes the native
+        # window on launch. loadFromRemoteSources tells it to trust MOTW-
+        # flagged assemblies so the app runs straight out of the zip.
+        shell: pwsh
+        run: |
+          Copy-Item "packaging\windows\Trading Signals.exe.config" "dist\Trading Signals\Trading Signals.exe.config"
 
       - name: Zip the build
         shell: pwsh
