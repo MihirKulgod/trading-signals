@@ -75,7 +75,8 @@ def _flatten_timeframes(instr: Any) -> list[int]:
 
 # Raw candle columns present on every timeframe's dataframe regardless of the
 # ta: indicator list (pandas_ta's rename only touches columns it added).
-BASE_CANDLE_COLUMNS = ["open", "high", "low", "close", "time_of_day", "session_atr"]
+BASE_CANDLE_COLUMNS = ["open", "high", "low", "close", "time_of_day", "session_atr",
+                       "body", "upper_wick", "lower_wick"]
 
 
 def alias_names(strategy_doc: Any) -> list[str]:
