@@ -137,7 +137,7 @@ def condition_tree(strategy_doc) -> dict[str, list[str]]:
     import json
 
     plain = _plain(strategy_doc)
-    key = json.dumps(plain.get("conditions", []), sort_keys=True)
+    key = json.dumps([plain.get("conditions", []), plain.get("definitions", [])], sort_keys=True)
     if _TREE_CACHE.get("key") != key:
         from condition import build_selected_conditions
 

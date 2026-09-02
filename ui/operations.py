@@ -122,11 +122,12 @@ def run_single_condition(strategy_doc, node_id: str):
         end = datetime.strptime(options["end"], "%Y-%m-%d").date() if options["end"] else date.today()
 
         # reuse_signals is forced off (the cache covers the whole strategy, not
-        # this block) and charts forced on (they are the point of the button),
-        # one per session so the block can be reviewed across the whole range.
+        # this block); charts follow the same 'render charts' setting as any
+        # other backtest, one per session so the block can be reviewed across
+        # the whole range when it's on.
         df, cols, children, days = backtest.run_backtest(
             config, settings, start, end,
-            download_data=options["download"], reuse_signals=False, visualize=True,
+            download_data=options["download"], reuse_signals=False, visualize=options["visualize"],
             progress=job.report, cache_signals=False, chart_valid_days=True,
             merge_block=node_id,
         )

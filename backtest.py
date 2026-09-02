@@ -332,15 +332,15 @@ def run_backtest(config, settings, start_date: date, end_date: date,
 
     return df, condition_cols, children_map, days
 
-def parse_args(default_start: str):
+def parse_args(default_start: str, default_visualize: bool):
     parser = argparse.ArgumentParser(
         description="Run a historical backtest of the configured strategy.")
     parser.add_argument("--download", action="store_true",
                         help="re-download historical candles instead of reusing the cached CSVs")
     parser.add_argument("--reuse-signals", action="store_true",
                         help="reuse cached condition scores instead of re-evaluating them")
-    parser.add_argument("--no-visualize", dest="visualize", action="store_false",
-                        help="skip rendering the per-onset charts")
+    parser.add_argument("--visualize", action=argparse.BooleanOptionalAction, default=default_visualize,
+                        help="render the per-onset charts (default: the backtest.visualize setting)")
     parser.add_argument("--from", dest="start", default=default_start, metavar="YYYY-MM-DD",
                         help=f"first date to evaluate (default: {default_start})")
     parser.add_argument("--to", dest="end", default=None, metavar="YYYY-MM-DD",
@@ -357,7 +357,8 @@ def main():
     with open(SETTINGS_PATH) as f:
         settings = yaml.safe_load(f)
 
-    args = parse_args(settings["historical"]["from"])
+    args = parse_args(settings["historical"]["from"],
+                      bool(settings.get("backtest", {}).get("visualize", False)))
     start_date = datetime.strptime(args.start, "%Y-%m-%d").date()
     end_date = datetime.strptime(args.end, "%Y-%m-%d").date() if args.end else date.today()
 
