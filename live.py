@@ -11,7 +11,6 @@ from data_retrieval import get_historical, historical_csv_path, parse_instrument
 from live_candles import LiveCandleBuilder
 from live_evaluation import LiveEvaluator
 from login import get_kite
-from notifications import Notifier
 from streaming import start_ticker
 
 CONFIG_PATH = "config/strategy.yaml"
@@ -49,9 +48,7 @@ def main():
     generate_base(config, instruments_data)
 
     builder = LiveCandleBuilder(instruments_data, token_to_id, csv_paths)
-    notifier = Notifier()
-    notifier.reset_daily_state()
-    evaluator = LiveEvaluator(config, instruments_data, WINDOW_DAYS, notifier)
+    evaluator = LiveEvaluator(config, instruments_data, WINDOW_DAYS)
 
     start_ticker(kite.api_key, kite.access_token, instrument_tokens, on_tick=builder.on_tick)
 

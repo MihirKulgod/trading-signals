@@ -13,7 +13,7 @@ these models is equivalent to asking "will the engine understand this config?".
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -207,19 +207,19 @@ class RecentCrossoverUpwardCondition(BaseModel):
 
 
 class CombinatorCondition(BaseModel):
-    """``and`` / ``or`` / ``not`` -- ``args`` is a list of child conditions."""
+    """``and`` / ``or`` / ``not`` / ``abs`` -- ``args`` is a list of child conditions."""
 
     model_config = ConfigDict(extra="forbid")
 
-    condition: Literal["and", "or", "not", "sequential"]
+    condition: Literal["and", "or", "not", "abs", "sequential"]
     id: str
     enabled: bool = True
     args: list["Condition"]
 
     @model_validator(mode="after")
     def _check_arity(self) -> "CombinatorCondition":
-        if self.condition == "not" and len(self.args) != 1:
-            raise ValueError("'not' must have exactly one child in args")
+        if self.condition in ("not", "abs") and len(self.args) != 1:
+            raise ValueError(f"'{self.condition}' must have exactly one child in args")
         if self.condition in ("and", "or", "sequential") and len(self.args) < 1:
             raise ValueError(f"'{self.condition}' must have at least one child in args")
         return self
@@ -581,6 +581,30 @@ class Dashboard(BaseModel):
     panels: list[DashboardPanel] = []
 
 
+class NotificationRule(BaseModel):
+    """
+    One notification rule: watch ``target`` (any condition id), decide whether
+    it's 'met' via ``kind``, and fire on the ``edge`` of that met/not-met state.
+    Delivery is deliberately not part of this schema -- see notifications.py.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    label: str = ""
+    target: str
+    kind: Literal["state", "children_met"] = "state"
+    params: dict[str, Any] = Field(default_factory=dict)
+    edge: Literal["rising", "falling", "level"] = "rising"
+    enabled: bool = True
+
+
+class Notifications(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rules: list[NotificationRule] = []
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -588,3 +612,4 @@ class Settings(BaseModel):
     historical: Historical
     backtest: Backtest = Backtest()
     dashboard: Dashboard = Dashboard()
+    notifications: Notifications = Notifications()

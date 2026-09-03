@@ -28,7 +28,7 @@ from data_retrieval import (InsufficientHistoryError, get_historical,
 from live_candles import LiveCandleBuilder
 from live_evaluation import LiveEvaluator
 from login import get_kite
-from notifications import Notifier
+from notifications import NotificationEngine, NotificationRule, load_rules
 from streaming import start_ticker
 
 log = get_logger(__name__)
@@ -59,6 +59,11 @@ class LiveService:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._ticker = None
+        # Notification rules and their evaluator, loaded fresh at each start()
+        # the same way the strategy itself is -- a running engine doesn't
+        # hot-reload either, so this stays consistent with that.
+        self.rules: list[NotificationRule] = []
+        self._notifications = NotificationEngine()
 
     @property
     def running(self) -> bool:
@@ -106,6 +111,7 @@ class LiveService:
                     self.node_scores = evaluator.node_scores
                     self.last_run = now
                     last_recompute = time.monotonic()
+                    self._notifications.evaluate(self.rules, self.node_scores, evaluator.children)
             except Exception as error:
                 # One bad cycle must not kill the engine during market hours.
                 self.error = f"{type(error).__name__}: {error}"
@@ -129,6 +135,9 @@ class LiveService:
 
     def _bootstrap(self):
         config = yaml.safe_load(app_paths.strategy_path().read_text(encoding="utf-8"))
+        settings = yaml.safe_load(app_paths.settings_path().read_text(encoding="utf-8"))
+        self.rules = load_rules(settings)
+        self._notifications = NotificationEngine()
 
         self.disabled = disabled_condition_ids(config)
         if self.disabled:
@@ -150,9 +159,7 @@ class LiveService:
         generate_base(config, instruments_data)
 
         builder = LiveCandleBuilder(instruments_data, token_to_id, csv_paths)
-        notifier = Notifier()
-        notifier.reset_daily_state()
-        evaluator = LiveEvaluator(config, instruments_data, self.window_days, notifier)
+        evaluator = LiveEvaluator(config, instruments_data, self.window_days)
 
         self._ticker = start_ticker(kite.api_key, kite.access_token,
                                     list(token_to_id.keys()), on_tick=builder.on_tick)

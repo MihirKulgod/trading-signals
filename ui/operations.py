@@ -796,6 +796,100 @@ def live_tab() -> None:
         dashboard.dashboard_section(
             _settings_doc(), _strategy_doc(), SERVICE, _persist_settings)
 
+    with ui.card().classes("w-full"):
+        _notifications_section(_settings_doc(), _strategy_doc(), _persist_settings)
+
+# --- notification rules ------------------------------------------------------
+
+NOTIFICATION_KINDS = ["state", "children_met"]
+NOTIFICATION_EDGES = ["rising", "falling", "level"]
+
+def _notification_rules(settings_doc):
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+    node = settings_doc.setdefault("notifications", CommentedMap())
+    node.setdefault("rules", CommentedSeq())
+    return node["rules"]
+
+def _new_rule_id() -> str:
+    import uuid
+
+    return f"notif_{uuid.uuid4().hex[:8]}"
+
+def _add_rule(rules, save) -> None:
+    from ruamel.yaml.comments import CommentedMap
+
+    rule = CommentedMap()
+    rule["id"] = _new_rule_id()
+    rule["label"] = ""
+    rule["target"] = ""
+    rule["kind"] = "state"
+    rule["params"] = CommentedMap()
+    rule["edge"] = "rising"
+    rule["enabled"] = True
+    rules.append(rule)
+    save()
+    _notifications_section.refresh()
+
+def _remove_rule(rules, index, save) -> None:
+    del rules[index]
+    save()
+    _notifications_section.refresh()
+
+def _set_rule_field(rule, key, value, save) -> None:
+    rule[key] = value
+    save()
+
+def _set_rule_min_met(rule, value, save) -> None:
+    from ruamel.yaml.comments import CommentedMap
+
+    n = int(value) if value not in (None, "") else 1
+    rule.setdefault("params", CommentedMap())["min_met"] = max(1, n)
+    save()
+
+@ui.refreshable
+def _notifications_section(settings_doc, strategy_doc, save) -> None:
+    from ui import dashboard
+
+    rules = _notification_rules(settings_doc)
+    target_options = sorted(dashboard.condition_tree(strategy_doc).keys())
+
+    with ui.row().classes("items-center gap-2"):
+        ui.label("Notifications").classes("font-medium")
+        ui.button(icon="add", on_click=lambda: _add_rule(rules, save)) \
+            .props("flat dense").tooltip("Add a notification rule")
+    ui.label("Delivery isn't wired up yet -- rules just log until a channel is chosen.") \
+        .classes(MUTED)
+    if len(rules) == 0:
+        ui.label("No rules yet.").classes(MUTED)
+        return
+
+    for index, rule in enumerate(rules):
+        with ui.row().classes("items-center gap-2 w-full flex-wrap"):
+            ui.input(label="label", value=rule.get("label", ""),
+                     on_change=lambda e, r=rule: _set_rule_field(r, "label", e.value, save)) \
+                .props("dense").classes("min-w-[220px]").style("flex:2")
+            ui.select(target_options, value=rule.get("target") or None, label="target",
+                     with_input=True,
+                     on_change=lambda e, r=rule: _set_rule_field(r, "target", e.value, save)) \
+                .props("dense").classes("min-w-[220px]").style("flex:2")
+            ui.select(NOTIFICATION_KINDS, value=rule.get("kind", "state"), label="kind",
+                     on_change=lambda e, r=rule: _set_rule_field(r, "kind", e.value, save)) \
+                .props("dense").classes("min-w-[130px]")
+            if rule.get("kind") == "children_met":
+                ui.number(label="min met", value=(rule.get("params") or {}).get("min_met", 1),
+                         precision=0, format="%d", min=1,
+                         on_change=lambda e, r=rule: _set_rule_min_met(r, e.value, save)) \
+                    .props("dense").classes("min-w-[90px]")
+            ui.select(NOTIFICATION_EDGES, value=rule.get("edge", "rising"), label="edge",
+                     on_change=lambda e, r=rule: _set_rule_field(r, "edge", e.value, save)) \
+                .props("dense").classes("min-w-[110px]")
+            ui.switch(value=rule.get("enabled", True),
+                     on_change=lambda e, r=rule: _set_rule_field(r, "enabled", e.value, save)) \
+                .props("dense").tooltip("Enabled")
+            ui.button(icon="delete", on_click=lambda i=index: _remove_rule(rules, i, save)) \
+                .props("flat dense color=negative")
+
 def _start_live() -> None:
     from live_service import SERVICE
     SERVICE.start()

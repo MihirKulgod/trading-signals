@@ -139,11 +139,18 @@ def condition_tree(strategy_doc) -> dict[str, list[str]]:
     plain = _plain(strategy_doc)
     key = json.dumps([plain.get("conditions", []), plain.get("definitions", [])], sort_keys=True)
     if _TREE_CACHE.get("key") != key:
-        from condition import build_selected_conditions
+        from condition import build_definitions, build_condition, selected_condition_specs
 
         children: dict[str, list[str]] = {}
         try:
-            for root in build_selected_conditions(plain):
+            # Every definition is walked directly, not just ones a top-level
+            # condition currently references via ref -- a definition backtested
+            # on its own (the single-block button) still needs its subtree
+            # linked for the inspector to navigate.
+            definitions = build_definitions(plain)
+            roots = list(definitions.built.values())
+            roots += [build_condition(c, definitions) for c in selected_condition_specs(plain)]
+            for root in roots:
                 for node in root.walk():
                     children[node.id] = [child.id for child in node.sub_conditions()]
         except Exception:
@@ -345,20 +352,30 @@ def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save) -> No
 
 
 def _children(record, block, tree) -> None:
-    """One rectangle per direct child. Children keep to a single level."""
+    """
+    One rectangle per direct child. Children keep to a single level, but a
+    child with children of its own also gets a met/total meter beneath its
+    score, e.g. '3/6', for how many of those grandchildren currently score
+    positive.
+    """
     child_ids = tree.get(block, []) if block else []
     if not child_ids:
         return
     with ui.row().classes("w-full gap-1 flex-wrap content-start") \
             .style("flex:1;min-height:0;overflow:hidden"):
         for child_id in child_ids:
+            grandchild_ids = tree.get(child_id, [])
             box = ui.column().classes("items-center justify-center rounded p-1 gap-0") \
                 .style("flex:1 1 0;min-width:52px")
             with box:
                 ui.label(child_id).classes("truncate w-full text-center") \
                     .style("font-size:9px;line-height:1.1").tooltip(child_id)
                 value = ui.label("").style("font-size:10px;font-weight:600;line-height:1.2")
-            record["children"].append((child_id, box, value))
+                meter = None
+                if grandchild_ids:
+                    meter = ui.label("").style("font-size:8px;opacity:0.85;line-height:1.1") \
+                        .tooltip(f"met / total of {child_id}'s own children")
+            record["children"].append((child_id, box, value, meter, grandchild_ids))
 
 
 def repaint(service) -> None:
@@ -384,12 +401,17 @@ def repaint(service) -> None:
             record["note"].set_text(
                 "disabled" if record["disabled"]
                 else ("" if state == "value" else STATE_LABEL[state]))
-            for child_id, box, label in record["children"]:
+            for child_id, box, label, meter, grandchild_ids in record["children"]:
                 child_state, child_value = block_state(child_id, scores, engine_ran)
                 box.style(f"background:{state_colour(child_state, child_value)};"
                           f"color:{state_text_colour(child_state, child_value)}")
                 label.set_text("\u00b7" if child_state == "skipped"
                                else format_score(child_value))
+                if meter is not None:
+                    met = sum(1 for gid in grandchild_ids
+                              if block_state(gid, scores, engine_ran)[0] == "value"
+                              and block_state(gid, scores, engine_ran)[1] >= 0)
+                    meter.set_text(f"{met}/{len(grandchild_ids)}")
     except Exception:
         # Elements from a previous page build; the next render replaces them.
         LIVE["panels"] = []
@@ -482,6 +504,25 @@ def _done(index) -> None:
 def _toggle_all(index, value) -> None:
     SHOW_ALL.add(index) if value else SHOW_ALL.discard(index)
     dashboard_section.refresh()
+
+
+def _editor(index, panel, panels, tree, strategy_doc, save) -> None:
+    """A panel's block/name form, in place of its usual score display."""
+    options = sorted(tree.keys()) if index in SHOW_ALL else top_level_ids(strategy_doc)
+    with ui.column().classes("w-full gap-1"):
+        ui.select(options, value=panel.get("block") or None, label="block", with_input=True,
+                  on_change=lambda e: _set(panel, "block", e.value, save)) \
+            .props("dense").classes("w-full")
+        ui.input(label="name", value=panel.get("name", ""),
+                 on_change=lambda e: _set(panel, "name", e.value, save)) \
+            .props("dense").classes("w-full")
+        ui.switch("show every block", value=index in SHOW_ALL,
+                  on_change=lambda e, i=index: _toggle_all(i, e.value)).props("dense")
+        with ui.row().classes("items-center gap-1 w-full justify-end"):
+            ui.button(icon="delete", on_click=lambda i=index: _remove_panel(panels, i, save)) \
+                .props("flat dense color=negative")
+            ui.button("Done", icon="check", on_click=lambda i=index: _done(i)) \
+                .props("flat dense")
 
 
 def editing() -> bool:
