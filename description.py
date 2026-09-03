@@ -310,6 +310,10 @@ class Describer:
             children = args if isinstance(args, list) else []
             inner = self.inline(children[0]) if children else "?"
             return f"**NOT** ({inner})"
+        if cond_type == "abs":
+            children = args if isinstance(args, list) else []
+            inner = self.inline(children[0]) if children else "?"
+            return f"**ABS** ({inner})"
         if cond_type in ("and", "or"):
             joiner = " AND " if cond_type == "and" else " OR "
             children = args if isinstance(args, list) else []
@@ -364,6 +368,13 @@ class Describer:
         if cond_type == "not":
             children = args if isinstance(args, list) else []
             out = [f"{pad}- **NOT:**"]
+            for child in children:
+                out += self.lines(child, depth + 1)
+            return out
+
+        if cond_type == "abs":
+            children = args if isinstance(args, list) else []
+            out = [f"{pad}- **ABS:**"]
             for child in children:
                 out += self.lines(child, depth + 1)
             return out

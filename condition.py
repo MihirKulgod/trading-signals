@@ -224,6 +224,14 @@ class Not(Condition):
     def evaluate(self, ctx): return -1 * (self.condition(ctx))
     def sub_conditions(self): return [self.condition]
 
+class Abs(Condition):
+    def __init__(self, id, condition: Condition):
+        super().__init__(id)
+        self.condition : Condition = condition
+
+    def evaluate(self, ctx): return abs(self.condition(ctx))
+    def sub_conditions(self): return [self.condition]
+
 class NormalizedSpread(Condition):
     def __init__(self, id, a, b, normalizer):
         super().__init__(id)
@@ -445,6 +453,7 @@ CONDITION_REGISTRY: dict[str, ConditionSpec] = {
     "and": ConditionSpec(And, (ArgSpec("args", "children", min_children=1),)),
     "or":  ConditionSpec(Or,  (ArgSpec("args", "children", min_children=1),)),
     "not": ConditionSpec(Not, (ArgSpec("args", "children", min_children=1, max_children=1),)),
+    "abs": ConditionSpec(Abs, (ArgSpec("args", "children", min_children=1, max_children=1),)),
     # Ordered tiers: a child is only evaluated if every earlier one passed.
     "sequential": ConditionSpec(Sequential, (ArgSpec("args", "children", min_children=1),)),
 
@@ -590,6 +599,8 @@ def build_condition(spec: dict, definitions: DefinitionResolver = None) -> Condi
         return Or(id, *[build_condition(c, definitions) for c in spec["args"]])
     if spec["condition"] == "not":
         return Not(id, build_condition(spec["args"][0], definitions))
+    if spec["condition"] == "abs":
+        return Abs(id, build_condition(spec["args"][0], definitions))
     if spec["condition"] == "sequential":
         return Sequential(id, *[build_condition(c, definitions) for c in spec["args"]])
     if spec["condition"] == "kernel":
@@ -683,12 +694,12 @@ def _nested_condition(operand):
     return None
 
 # Combinator arg lists are shaped [{condition, id, args}, ...] rather than
-# following an ArgSpec("kind"="operand") entry, so and/or/sequential/not are
-# special-cased; everything else is walked generically off CONDITION_REGISTRY.
+# following an ArgSpec("kind"="operand") entry, so and/or/sequential/not/abs
+# are special-cased; everything else is walked generically off CONDITION_REGISTRY.
 def _condition_children(spec: dict) -> list:
     """Every nested raw condition spec directly inside `spec`."""
     cond_type = spec.get("condition")
-    if cond_type in ("and", "or", "sequential", "not"):
+    if cond_type in ("and", "or", "sequential", "not", "abs"):
         return list(spec.get("args") or [])
     entry = CONDITION_REGISTRY.get(cond_type)
     if entry is None:
@@ -726,7 +737,7 @@ def is_time_gate(spec: dict, definitions: list, seen: frozenset = frozenset()) -
 # recurse into whatever they wrap (a combinator's children, a window's input,
 # a kernel/multiply/boost's nested condition).
 _STRUCTURAL_TYPES = {
-    "and", "or", "not", "sequential", "exists_in_window", "for_all_in_window",
+    "and", "or", "not", "abs", "sequential", "exists_in_window", "for_all_in_window",
     "kernel", "multiply", "boost", "session_minute",
 }
 

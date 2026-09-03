@@ -123,6 +123,7 @@ _FALLBACK_ARG_SPECS: dict[str, list[dict]] = {
     "and": [{"name": "args", "kind": "children", "min": 1, "max": None}],
     "or": [{"name": "args", "kind": "children", "min": 1, "max": None}],
     "not": [{"name": "args", "kind": "children", "min": 1, "max": 1}],
+    "abs": [{"name": "args", "kind": "children", "min": 1, "max": 1}],
     "normalized_spread": [{"name": "a", "kind": "operand"}, {"name": "b", "kind": "operand"},
                           {"name": "normalizer", "kind": "operand"}],
     "above": [{"name": "a", "kind": "operand"}, {"name": "b", "kind": "operand"},
