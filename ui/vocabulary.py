@@ -180,7 +180,7 @@ COLOR_OPTIONS = [
 # Common pandas_ta indicator kinds (free text also allowed in the UI).
 INDICATOR_KIND_OPTIONS = [
     "ema", "sma", "wma", "vwap", "macd", "rsi", "atr",
-    "bbands", "stoch", "adx", "obv", "cci",
+    "bbands", "stoch", "adx", "obv", "cci", "stdev",
 ]
 
 INSTRUMENT_TYPE_OPTIONS = ["FUT", "CE", "PE", "EQ"]
