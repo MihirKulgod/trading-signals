@@ -493,8 +493,8 @@ def _signal_inspector() -> None:
 # One cached frame per (instrument, timeframe), each independently kept until
 # its file's mtime/size changes -- the same rule _signals_frame uses.
 _INDICATOR_FRAMES: dict = {}
-INSPECT_IND: dict = {"instrument": None, "timeframe": None, "column": None,
-                     "position": None, "residual": 0.0}
+INSPECT_IND: dict = {"instrument": None, "timeframe": None, "developing": False,
+                     "column": None, "position": None, "residual": 0.0}
 _PANEL_IND: dict = {"value": None, "caption": None, "counter": None, "moment": None,
                     "select": None}
 
@@ -504,36 +504,42 @@ def _indicator_dir():
 
 
 def _indicator_combos() -> list:
-    """(instrument_id, timeframe) pairs with a cached frame, for the pickers."""
+    """(instrument_id, timeframe, developing) triples with a cached frame."""
     directory = _indicator_dir()
     if not directory.is_dir():
         return []
     combos = []
     for path in directory.glob("*__*.csv"):
-        instrument_id, _, timeframe = path.stem.partition("__")
-        combos.append((instrument_id, timeframe))
+        stem = path.stem
+        developing = stem.endswith("__developing")
+        if developing:
+            stem = stem[: -len("__developing")]
+        instrument_id, _, timeframe = stem.partition("__")
+        combos.append((instrument_id, timeframe, developing))
     return sorted(combos)
 
 
-def _indicator_frame(instrument_id: str, timeframe: str):
+def _indicator_frame(instrument_id: str, timeframe: str, developing: bool = False):
     import pandas as pd
 
-    path = _indicator_dir() / f"{instrument_id}__{timeframe}.csv"
+    path = _indicator_dir() / f"{instrument_id}__{timeframe}{'__developing' if developing else ''}.csv"
     if not path.is_file():
         return None
     stat = path.stat()
     key = (stat.st_mtime_ns, stat.st_size)
-    cached = _INDICATOR_FRAMES.get((instrument_id, timeframe))
+    cache_key = (instrument_id, timeframe, developing)
+    cached = _INDICATOR_FRAMES.get(cache_key)
     if cached is None or cached["key"] != key:
         cached = {"key": key, "frame": pd.read_csv(path, index_col="datetime", parse_dates=True)}
-        _INDICATOR_FRAMES[(instrument_id, timeframe)] = cached
+        _INDICATOR_FRAMES[cache_key] = cached
     return cached["frame"]
 
 
 def _current_indicator_frame():
     if not INSPECT_IND["instrument"] or not INSPECT_IND["timeframe"]:
         return None
-    return _indicator_frame(INSPECT_IND["instrument"], INSPECT_IND["timeframe"])
+    return _indicator_frame(INSPECT_IND["instrument"], INSPECT_IND["timeframe"],
+                            INSPECT_IND["developing"])
 
 
 def _indicator_paint() -> None:
@@ -610,13 +616,15 @@ def _indicator_set_column(column: str) -> None:
     _indicator_paint()
 
 
-def _indicator_set_combo(instrument_id: str, timeframe: str) -> None:
-    """Switching instrument or timeframe swaps the whole frame, so the column
-    list and row count both need rebuilding, not just repainting."""
-    if (instrument_id, timeframe) == (INSPECT_IND["instrument"], INSPECT_IND["timeframe"]):
+def _indicator_set_combo(instrument_id: str, timeframe: str, developing: bool = False) -> None:
+    """Switching instrument, timeframe, or developing swaps the whole frame,
+    so the column list and row count both need rebuilding, not just repainting."""
+    key = (instrument_id, timeframe, developing)
+    if key == (INSPECT_IND["instrument"], INSPECT_IND["timeframe"], INSPECT_IND["developing"]):
         return
     INSPECT_IND["instrument"] = instrument_id
     INSPECT_IND["timeframe"] = timeframe
+    INSPECT_IND["developing"] = developing
     INSPECT_IND["column"] = None
     INSPECT_IND["position"] = None
     _indicator_inspector.refresh()
@@ -629,8 +637,8 @@ def _indicator_inspector() -> None:
         ui.label("No cached indicators — run a backtest to populate this.").classes(MUTED)
         return
 
-    if (INSPECT_IND["instrument"], INSPECT_IND["timeframe"]) not in combos:
-        INSPECT_IND["instrument"], INSPECT_IND["timeframe"] = combos[0]
+    if (INSPECT_IND["instrument"], INSPECT_IND["timeframe"], INSPECT_IND["developing"]) not in combos:
+        INSPECT_IND["instrument"], INSPECT_IND["timeframe"], INSPECT_IND["developing"] = combos[0]
 
     frame = _current_indicator_frame()
     if frame is None or not len(frame.columns) or not len(frame):
@@ -645,9 +653,10 @@ def _indicator_inspector() -> None:
     INSPECT_IND["position"] = max(0, min(len(frame) - 1, INSPECT_IND["position"]))
     stamp = frame.index[INSPECT_IND["position"]]
 
-    instruments = sorted({i for i, _ in combos})
-    timeframes = sorted({tf for i, tf in combos if i == INSPECT_IND["instrument"]},
+    instruments = sorted({i for i, _, _ in combos})
+    timeframes = sorted({tf for i, tf, _ in combos if i == INSPECT_IND["instrument"]},
                         key=lambda t: int(t[:-3]) if t.endswith("min") else t)
+    has_developing = (INSPECT_IND["instrument"], INSPECT_IND["timeframe"], True) in combos
 
     card = ui.card().classes("w-full")
     with card:
@@ -659,12 +668,19 @@ def _indicator_inspector() -> None:
         with ui.row().classes("items-center gap-3 flex-wrap"):
             ui.select(instruments, value=INSPECT_IND["instrument"], label="instrument",
                       on_change=lambda e: _indicator_set_combo(
-                          e.value, next(tf for i, tf in combos if i == e.value))) \
+                          e.value, next(tf for i, tf, _ in combos if i == e.value))) \
                 .props("dense options-dense").classes("min-w-[140px]")
             ui.select(timeframes, value=INSPECT_IND["timeframe"], label="timeframe",
                       on_change=lambda e: _indicator_set_combo(
                           INSPECT_IND["instrument"], e.value)) \
                 .props("dense options-dense").classes("min-w-[100px]")
+            if has_developing:
+                ui.switch("developing", value=INSPECT_IND["developing"],
+                          on_change=lambda e: _indicator_set_combo(
+                              INSPECT_IND["instrument"], INSPECT_IND["timeframe"], e.value)) \
+                    .props("dense").tooltip(
+                        "Bucket-to-date values, one row per minute, instead of one "
+                        "row per closed candle -- lets you inspect e.g. 15min RSI at 9:32")
             select = ui.select(columns, value=INSPECT_IND["column"], label="column",
                                with_input=True,
                                on_change=lambda e: _indicator_set_column(e.value)) \

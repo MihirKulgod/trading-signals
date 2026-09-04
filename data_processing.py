@@ -155,7 +155,7 @@ def build_developing_frame(candles_1m_days, minutes: int, strategy, completed,
         frame.ta.study(strategy)
         add_derived_columns(frame)
         rows.append(frame.iloc[-1])
-    return pd.DataFrame(rows, index=pd.DatetimeIndex(index))
+    return pd.DataFrame(rows, index=pd.DatetimeIndex(index, name="datetime"))
 
 def build_timeframes(config, instruments_data, candles_for, progress_label="Processing",
                      developing_history=True, progress=None):

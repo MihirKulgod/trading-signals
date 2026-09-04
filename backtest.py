@@ -99,14 +99,17 @@ def merge_cached_signals(df, children_map, block_id):
         yaml.safe_dump(patched, f, default_flow_style=False)
     return f"merged {len(df.columns)} column(s)"
 
-def indicator_cache_path(instrument_id: str, timeframe: str):
-    return INDICATOR_CACHE_DIR / f"{instrument_id}__{timeframe}.csv"
+def indicator_cache_path(instrument_id: str, timeframe: str, developing: bool = False):
+    suffix = "__developing" if developing else ""
+    return INDICATOR_CACHE_DIR / f"{instrument_id}__{timeframe}{suffix}.csv"
 
 def save_cached_indicators(instruments_data) -> None:
     """
     Persist each instrument/timeframe's completed frame -- close, EMAs, MACD,
     RSI, ATR, whatever the ``ta:`` list produces -- so they can be browsed
-    without holding a live engine instance.
+    without holding a live engine instance. Any timeframe with a developing
+    frame (one row per minute, bucket-to-date) gets a second file alongside
+    the completed one, so both grids are inspectable.
 
     Unlike the signal cache this has no notion of "selected conditions": every
     column here comes from generate_base, which runs the same way regardless
@@ -117,6 +120,9 @@ def save_cached_indicators(instruments_data) -> None:
     for instrument in instruments_data:
         for timeframe, df in instrument["timeframes"]["intraday"].items():
             df.to_csv(indicator_cache_path(instrument["id"], timeframe),
+                     index=True, sep=',', encoding="utf-8")
+        for timeframe, df in (instrument.get("developing", {}).get("intraday", {}) or {}).items():
+            df.to_csv(indicator_cache_path(instrument["id"], timeframe, developing=True),
                      index=True, sep=',', encoding="utf-8")
 
 def tier_columns(df, condition_cols, children_map):
