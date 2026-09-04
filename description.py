@@ -211,7 +211,8 @@ class Describer:
         if kind == "value":
             return _number(operand.get("value"))
         if kind == "condition":
-            return self.quick_formula(operand.get("input")) or "?"
+            inner = operand.get("input") or {}
+            return self.quick_formula(inner) or readable_id(inner.get("id")) or "?"
         if kind == "reference":
             column = operand.get("col_name")
             label = self.columns.get(column, readable_id(column)) if column else "Candle"

@@ -130,20 +130,23 @@ class MarketContext:
                     raise InstrumentNotFoundError(instrument_id)
 
                 developing = instrument.get("developing", {}).get(timeframe_type, {})
-                is_developing = timeframe in developing
+                # A timeframe having a developing frame built doesn't by itself change
+                # what any reference means -- only a reference that explicitly opts in
+                # (developing: true on the operand) reads it. Every other reference
+                # keeps meaning "the last closed bar", so turning developing on for a
+                # timeframe is free until something actually asks for the partial one.
+                wants_developing = bool(data_src.get("developing", False))
 
-                if lookback == 0 and is_developing:
+                if lookback == 0 and wants_developing and timeframe in developing:
                     # The bucket-to-date candle: everything known at current_time.
                     df = developing[timeframe]
                     pos = df.index.get_indexer([self.current_time], method="ffill")[0]
                 else:
                     df = instrument["timeframes"][timeframe_type][timeframe]
-                    pos = df.index.get_indexer([self.current_time], method="ffill")[0] - lookback
-                    # The bucket holding current_time is still forming, so the last
-                    # closed one sits before it. A developing timeframe spends
-                    # lookback 0 on the partial candle, making t-1 that bucket.
-                    if not is_developing:
-                        pos -= 1
+                    # The bucket holding current_time is still forming (or, once it
+                    # closes, is the newest completed row), so the last fully closed
+                    # bar sits one position before it -- hence the unconditional -1.
+                    pos = df.index.get_indexer([self.current_time], method="ffill")[0] - lookback - 1
 
                 if col_name not in df.columns:
                     # Common with wide indicators on the start of a historical data chunk

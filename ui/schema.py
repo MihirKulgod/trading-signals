@@ -42,6 +42,10 @@ class ReferenceOperand(BaseModel):
     timeframe: str
     col_name: str
     lookback: int = 0
+    # Only meaningful at lookback 0, and only if the timeframe itself has a
+    # developing frame built (see TimeframeSpec.developing): reads the
+    # bucket-to-date partial candle instead of the last closed one.
+    developing: bool = False
 
 
 class ConditionOperand(BaseModel):

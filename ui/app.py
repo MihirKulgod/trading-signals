@@ -534,6 +534,14 @@ def _set_lookback(operand: CommentedMap, value: Any) -> None:
         operand.pop("lookback", None)
 
 
+def _set_developing(operand: CommentedMap, value: Any) -> None:
+    """Reference developing flag: keep the key only when true (files stay clean)."""
+    if value:
+        operand["developing"] = True
+    else:
+        operand.pop("developing", None)
+
+
 def _add_child(node: CommentedMap) -> None:
     node.setdefault("args", CommentedSeq()).append(_default_leaf_condition())
     _refresh_node(node)
@@ -734,6 +742,13 @@ def _operand_editor(parent: CommentedMap, key: str, label: str, depth: int = 0, 
                 ui.number(label="lookback", value=op.get("lookback", 0), precision=0, format="%d",
                           on_change=lambda e, o=op: _set_lookback(o, e.value)) \
                     .props("dense").classes("min-w-[110px]")
+                if op.get("lookback", 0) == 0:
+                    ui.switch("developing", value=op.get("developing", False),
+                              on_change=lambda e, o=op: _set_developing(o, e.value)) \
+                        .props("dense").tooltip(
+                            "Read the bucket-to-date partial candle instead of the last "
+                            "closed one. Only takes effect if this timeframe itself has "
+                            "'developing' turned on.")
 
 
 def _int_field(args: CommentedMap, name: str) -> None:
@@ -870,77 +885,6 @@ def _ref_preview(node: CommentedMap) -> None:
                 ui.label(row["id"]).classes("text-sm")
                 if row["detail"]:
                     ui.label(row["detail"]).classes("text-xs text-gray-500")
-
-
-# --- structure overlay ------------------------------------------------------
-
-
-def _node_key(path: tuple) -> str:
-    """Unique per position in the tree, since one definition can appear twice."""
-    return "/".join(str(part) for part in path)
-
-
-def _structure_nodes(node, seen: frozenset = frozenset(), path: tuple = ("root",)) -> list[dict]:
-    """
-    ``ui.tree`` nodes for a condition, with every ref replaced by what it points
-    at, so the result reads as the condition's semantics rather than its wiring.
-    """
-    if not isinstance(node, dict) or len(path) > PREVIEW_MAX_DEPTH:
-        return []
-    cond_type = node.get("condition")
-
-    if cond_type == "ref":
-        target = (node.get("args") or {}).get("target")
-        if target in seen:
-            return [{"id": _node_key(path), "label": f"↺ {target} (shown above)"}]
-        definition = _find_definition(target)
-        if definition is None:
-            return [{"id": _node_key(path), "label": f"⚠ {target} is not in definitions"}]
-        # Take the ref's place rather than nesting under it.
-        return _structure_nodes(definition, seen | {target}, path)
-
-    label = f"{cond_type}   ·   {node.get('id', '')}"
-    detail = _node_detail(node)
-    if detail:
-        label += f"   ·   {detail}"
-
-    children: list[dict] = []
-    args = node.get("args")
-    if _is_combinator(cond_type):
-        for index, child in enumerate(args or []):
-            children += _structure_nodes(child, seen, path + (index,))
-    elif isinstance(args, dict):
-        for spec in _specs_for(cond_type):
-            value = args.get(spec["name"])
-            if spec["kind"] == "condition":
-                children += _structure_nodes(value, seen, path + (spec["name"],))
-            elif spec["kind"] in ("operand", "reference") \
-                    and isinstance(value, dict) and value.get("type") == "condition":
-                children += _structure_nodes(value.get("input"), seen, path + (spec["name"],))
-
-    entry = {"id": _node_key(path), "label": label}
-    if children:
-        entry["children"] = children
-    return [entry]
-
-
-def _show_structure(node: CommentedMap) -> None:
-    nodes = _structure_nodes(node)
-    with ui.dialog() as dialog, ui.card().classes("w-[950px] max-w-[95vw]"):
-        with ui.row().classes("items-center gap-2 w-full"):
-            ui.label(f"Structure — {node.get('id', '')}").classes("font-medium")
-            ui.space()
-            ui.button(icon="unfold_more", on_click=lambda: tree.expand()) \
-                .props("flat dense").tooltip("Expand all")
-            ui.button(icon="unfold_less", on_click=lambda: tree.collapse()) \
-                .props("flat dense").tooltip("Collapse all")
-            ui.button(icon="close", on_click=dialog.close).props("flat dense")
-        ui.label("Read-only. References are replaced by the definition they point at.") \
-            .classes(MUTED)
-        with ui.scroll_area().classes("w-full").style("height:70vh"):
-            tree = ui.tree(nodes, label_key="label").props("dense no-connectors")
-            tree.expand()
-    dialog.open()
 
 
 def _nested_condition_editor(args: CommentedMap, key: str, depth: int, refresh_node=None) -> None:
@@ -1080,8 +1024,6 @@ def _condition_editor_body(node: CommentedMap, depth: int, on_remove=None, show_
                     .props("flat dense").tooltip("Add child")
                 _paste_button(lambda n=node: _paste_append(n.setdefault("args", CommentedSeq()), n),
                               "Paste as child")
-            ui.button(icon="account_tree", on_click=lambda n=node: _show_structure(n)) \
-                .props("flat dense").tooltip("View this block's full structure")
             ui.button(icon="notes", on_click=lambda n=node: _show_description(n)) \
                 .props("flat dense").tooltip("Describe this block in plain English")
             ui.button(icon="swap_vert", on_click=lambda n=node: _reverse_condition(n)) \
