@@ -223,6 +223,18 @@ MIN_SIZE, MAX_SIZE = 0.6, 1.4
 HANDLE = "dash-handle"
 SHOW_ALL: set[int] = set()   # panels whose picker is showing every block
 
+GHOST_CLASS = "dash-ghost"
+# repaint() sets background/color/opacity as inline styles, which beat a
+# plain class (SortableJS's default ghost styling included) -- !important is
+# what actually lets the drop-preview look different from the live panel.
+GHOST_CSS = f"""
+.{GHOST_CLASS} {{
+  opacity: 0.25 !important;
+  background: #9ca3af !important;
+  filter: grayscale(100%) !important;
+}}
+"""
+
 # Element handles kept from the last build, so a tick can repaint values in
 # place. Rebuilding the grid each second cancelled any drag in progress.
 LIVE: dict[str, Any] = {"ring": None, "status": None, "panels": []}
@@ -315,6 +327,7 @@ def dashboard_section(settings_doc, strategy_doc, service, save) -> None:
     grid.make_sortable(
         handle=f".{HANDLE}",
         on_end=lambda e, target=panels: _move(target, e.old_index, e.new_index, save),
+        ghost_class=GHOST_CLASS,
     )
     with grid:
         for index, panel in enumerate(panels):

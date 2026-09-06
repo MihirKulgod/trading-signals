@@ -1302,7 +1302,10 @@ def _banners() -> None:
 
 @ui.page("/")
 def index() -> None:
+    from ui import dashboard
+
     ui.add_css(_IMPORT_EXPORT_CSS)
+    ui.add_css(dashboard.GHOST_CSS)
     _load_docs()
     _collapse_all()
     STATE["current"] = "Settings · Display"
