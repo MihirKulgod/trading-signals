@@ -221,7 +221,6 @@ PANEL_WIDTH = 265
 PANEL_HEIGHT = 186
 MIN_SIZE, MAX_SIZE = 0.6, 1.4
 HANDLE = "dash-handle"
-EDITING: set[int] = set()
 SHOW_ALL: set[int] = set()   # panels whose picker is showing every block
 
 # Element handles kept from the last build, so a tick can repaint values in
@@ -302,7 +301,7 @@ def dashboard_section(settings_doc, strategy_doc, service, save) -> None:
             .props("dense").style("width:130px") \
             .tooltip("Smaller panels fit more per row")
         slider.on("change", lambda _: _set_size(config, slider.value, save))
-        ui.button(icon="add", on_click=lambda: _add_panel(panels, save)) \
+        ui.button(icon="add", on_click=lambda: _add_panel(panels, tree, strategy_doc, save)) \
             .props("flat dense").tooltip("Add a panel")
         ui.button(icon="grid_view",
                   on_click=lambda: _reset_panels(panels, strategy_doc, save)) \
@@ -326,34 +325,88 @@ def dashboard_section(settings_doc, strategy_doc, service, save) -> None:
 def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save) -> None:
     block = panel.get("block") or ""
     visible_when = panel.get("visible_when")
+    rows_cfg = panel.get("rows") or []
     card = ui.card().classes("p-2 gap-1").style(panel_style(size))
     record = {"block": block, "card": card, "disabled": block in disabled,
               "visible_when": visible_when if isinstance(visible_when, dict) else None,
-              "score": None, "note": None, "children": []}
+              "score": None, "note": None, "children": [], "rows": []}
 
     with card:
-        if index in EDITING:
-            _editor(index, panel, panels, tree, strategy_doc, save)
-            return
-
         with ui.row().classes("items-center gap-1 w-full no-wrap"):
             ui.icon("drag_indicator").classes(f"{HANDLE} cursor-move") \
                 .style("opacity:0.6").tooltip("Drag to reorder")
             ui.label(panel.get("name") or "(unnamed)") \
                 .classes("font-medium truncate").style("flex:1;min-width:0")
-            ui.button(icon="edit", on_click=lambda i=index: _edit(i)) \
+            bad_ids = _invalid_targets(panel, tree)
+            if bad_ids:
+                ui.badge("Invalid").props("color=negative") \
+                    .tooltip("Unknown id(s): " + ", ".join(bad_ids))
+            ui.button(icon="edit",
+                      on_click=lambda i=index, p=panel: _edit(i, p, panels, tree, strategy_doc, save)) \
                 .props("flat dense size=sm").style("color:inherit")
             ui.button(icon="close",
                       on_click=lambda i=index: _remove_panel(panels, i, save)) \
                 .props("flat dense size=sm").style("color:inherit")
 
-        with ui.row().classes("items-baseline gap-2 w-full no-wrap"):
-            record["score"] = ui.label("").classes("font-semibold").style(score_font(size))
-            record["note"] = ui.label("").classes("text-xs").style("opacity:0.85")
-
-        _children(record, block, tree)
+        if rows_cfg:
+            _rows(record, rows_cfg, tree)
+        else:
+            with ui.row().classes("items-baseline gap-2 w-full no-wrap"):
+                record["score"] = ui.label("").classes("font-semibold").style(score_font(size))
+                record["note"] = ui.label("").classes("text-xs").style("opacity:0.85")
+            _children(record, block, tree)
 
     LIVE["panels"].append(record)
+
+
+def _invalid_targets(panel, tree) -> list[str]:
+    """
+    Every id this panel references that doesn't exist in the strategy (a
+    condition renamed or deleted out from under a saved dashboard config).
+    An unset field isn't an error -- only a non-empty id that fails to
+    resolve is.
+    """
+    bad = []
+    rows_cfg = panel.get("rows") or []
+    block = panel.get("block") or ""
+    if not rows_cfg and block and block not in tree:
+        bad.append(block)
+    for row in rows_cfg:
+        target = row.get("target") or ""
+        if target and target not in tree:
+            bad.append(target)
+    vw = panel.get("visible_when")
+    if isinstance(vw, dict):
+        target = vw.get("target") or ""
+        if target and target not in tree:
+            bad.append(target)
+    return bad
+
+
+def _rows(record, rows_cfg, tree) -> None:
+    """
+    Several independently-labelled targets in one panel, e.g. a tri-state
+    'T60 Up / Unclear / Down' readout, instead of the usual single block.
+    Space is tighter with multiple rows, so each one only gets a compact
+    met/total meter for its own children (same math _children() uses), not
+    a full rectangle-per-child grid.
+    """
+    with ui.column().classes("w-full gap-0"):
+        for row_cfg in rows_cfg:
+            target = row_cfg.get("target") or ""
+            label_text = row_cfg.get("label") or target
+            invalid = bool(target) and target not in tree
+            child_ids = tree.get(target, []) if target else []
+            with ui.row().classes("items-center justify-between w-full gap-1 no-wrap"):
+                ui.label(label_text).classes("text-xs truncate") \
+                    .style(f"flex:1;min-width:0;{'color:#dc2626' if invalid else ''}") \
+                    .tooltip("Unknown id" if invalid else target)
+                meter = None
+                if child_ids:
+                    meter = ui.label("").style("font-size:9px;opacity:0.85") \
+                        .tooltip(f"met / total of {target}'s own children")
+                value = ui.label("").classes("text-xs font-semibold px-1 rounded")
+            record["rows"].append((target, value, meter, child_ids))
 
 
 def _children(record, block, tree) -> None:
@@ -426,10 +479,11 @@ def repaint(service) -> None:
                                  f"background:{state_colour(state, value)};"
                                  f"color:{state_text_colour(state, value)};"
                                  f"opacity:{0.55 if record['disabled'] else 1}")
-            record["score"].set_text(format_score(value))
-            record["note"].set_text(
-                "disabled" if record["disabled"]
-                else ("" if state == "value" else STATE_LABEL[state]))
+            if record["score"] is not None:
+                record["score"].set_text(format_score(value))
+                record["note"].set_text(
+                    "disabled" if record["disabled"]
+                    else ("" if state == "value" else STATE_LABEL[state]))
             for child_id, box, label, meter, grandchild_ids in record["children"]:
                 child_state, child_value = block_state(child_id, scores, engine_ran)
                 box.style(f"background:{state_colour(child_state, child_value)};"
@@ -441,6 +495,17 @@ def repaint(service) -> None:
                               if block_state(gid, scores, engine_ran)[0] == "value"
                               and block_state(gid, scores, engine_ran)[1] >= 0)
                     meter.set_text(f"{met}/{len(grandchild_ids)}")
+            for target, value_el, meter, child_ids in record["rows"]:
+                row_state, row_value = block_state(target, scores, engine_ran)
+                value_el.style(f"background:{state_colour(row_state, row_value)};"
+                               f"color:{state_text_colour(row_state, row_value)}")
+                value_el.set_text("\u00b7" if row_state == "skipped"
+                                  else format_score(row_value))
+                if meter is not None:
+                    met = sum(1 for cid in child_ids
+                              if block_state(cid, scores, engine_ran)[0] == "value"
+                              and block_state(cid, scores, engine_ran)[1] >= 0)
+                    meter.set_text(f"{met}/{len(child_ids)}")
     except Exception:
         # Elements from a previous page build; the next render replaces them.
         LIVE["panels"] = []
@@ -485,17 +550,16 @@ def _as_map(entry: dict):
     return panel
 
 
-def _add_panel(panels, save) -> None:
+def _add_panel(panels, tree, strategy_doc, save) -> None:
     panels.append(_as_map({}))
-    EDITING.clear()
-    EDITING.add(len(panels) - 1)   # a new panel opens straight into its editor
+    SHOW_ALL.clear()
     save()
     dashboard_section.refresh()
+    _edit(len(panels) - 1, panels[-1], panels, tree, strategy_doc, save)   # opens straight into its editor
 
 
 def _reset_panels(panels, strategy_doc, save) -> None:
     panels[:] = [_as_map(entry) for entry in default_panels(strategy_doc)]
-    EDITING.clear()
     SHOW_ALL.clear()
     save()
     dashboard_section.refresh()
@@ -503,39 +567,61 @@ def _reset_panels(panels, strategy_doc, save) -> None:
 
 def _remove_panel(panels, index, save) -> None:
     del panels[index]
-    EDITING.clear()                # indices shift, so no editor survives a removal
-    SHOW_ALL.clear()
+    SHOW_ALL.clear()               # indices shift, so stale per-index state can't survive
     save()
     dashboard_section.refresh()
+
+
+def _remove_panel_and_close(panels, index, save, dialog) -> None:
+    _remove_panel(panels, index, save)
+    dialog.close()
 
 
 def _move(panels, old_index, new_index, save) -> None:
     if old_index == new_index:
         return
     panels.insert(new_index, panels.pop(old_index))
-    EDITING.clear()
     SHOW_ALL.clear()
     save()
     dashboard_section.refresh()
 
 
-def _edit(index) -> None:
-    EDITING.add(index)
-    dashboard_section.refresh()
+def _edit(index, panel, panels, tree, strategy_doc, save) -> None:
+    """
+    Opens the panel's editor as a centered modal dialog (dimmed backdrop,
+    same as every other dialog in this app) instead of swapping the panel's
+    own small card content -- there isn't room in there for a form.
 
-
-def _done(index) -> None:
-    EDITING.discard(index)
+    The dialog's content is its own fresh refreshable, separate from
+    dashboard_section's: a structural change inside the form (toggling
+    'show every block', adding/removing a row, flipping conditional
+    visibility) only needs to redraw the dialog, not the whole grid behind
+    it, and doing so can't interrupt a drag in progress out there either.
+    """
     SHOW_ALL.discard(index)
+
+    @ui.refreshable
+    def _body() -> None:
+        _editor(index, panel, panels, tree, strategy_doc, save, dialog, _body.refresh)
+
+    with ui.dialog() as dialog, ui.card().classes("w-[480px] max-w-[95vw] gap-2"):
+        _body()
+    dialog.open()
+
+
+def _finish_edit(dialog) -> None:
+    """Done: the grid only needs to reflect field edits once you're done with
+    them, matching how they've never live-updated behind the form either."""
     dashboard_section.refresh()
+    dialog.close()
 
 
-def _toggle_all(index, value) -> None:
+def _toggle_all(index, value, refresh) -> None:
     SHOW_ALL.add(index) if value else SHOW_ALL.discard(index)
-    dashboard_section.refresh()
+    refresh()
 
 
-def _toggle_visible_when(panel, value, save) -> None:
+def _toggle_visible_when(panel, value, save, refresh) -> None:
     """Turning this off removes the key entirely, matching 'no visible_when
     means always shown' -- the field structurally changes, so this refreshes."""
     from ruamel.yaml.comments import CommentedMap
@@ -545,17 +631,17 @@ def _toggle_visible_when(panel, value, save) -> None:
     else:
         panel.pop("visible_when", None)
     save()
-    dashboard_section.refresh()
+    refresh()
 
 
-def _set_visible_when(panel, key, value, save) -> None:
+def _set_visible_when(panel, key, value, save, refresh) -> None:
     vw = panel.get("visible_when")
     if not isinstance(vw, dict):
         return
     vw[key] = value
     save()
     if key == "kind":
-        dashboard_section.refresh()   # min-met field appears only for children_met
+        refresh()   # min-met field appears only for children_met
 
 
 def _set_visible_when_min_met(panel, value, save) -> None:
@@ -569,43 +655,101 @@ def _set_visible_when_min_met(panel, value, save) -> None:
     save()
 
 
-def _editor(index, panel, panels, tree, strategy_doc, save) -> None:
-    """A panel's block/name form, in place of its usual score display."""
+def _add_row(panel, save, refresh) -> None:
+    """Rows replace the usual single-block view, so the block field stays
+    (harmless -- rendering ignores it once rows are non-empty) but adding
+    the first row is what switches a panel into multi-row mode."""
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+    rows = panel.setdefault("rows", CommentedSeq())
+    rows.append(CommentedMap([("label", ""), ("target", "")]))
+    save()
+    refresh()
+
+
+def _remove_row(panel, index, save, refresh) -> None:
+    rows = panel.get("rows")
+    if isinstance(rows, list) and 0 <= index < len(rows):
+        del rows[index]
+    save()
+    refresh()
+
+
+def _set_row_field(row, key, value, save) -> None:
+    row[key] = value
+    save()
+
+
+def _options_with(options: list, current) -> list:
+    """
+    A select's value must be one of its options, or nicegui raises ValueError
+    right in __init__ -- before the dialog can even open. A condition id that
+    got renamed or deleted out from under a saved panel would otherwise crash
+    the editor shut, with no way back in to fix it. Appending the stale value
+    keeps the field open and editable (it'll show as an odd extra entry,
+    matching the 'Invalid' badge already shown on the panel itself) instead
+    of hiding the problem behind a crash.
+    """
+    if current and current not in options:
+        return options + [current]
+    return options
+
+
+def _editor(index, panel, panels, tree, strategy_doc, save, dialog, refresh) -> None:
+    """A panel's full edit form, inside the modal _edit() opened."""
     options = sorted(tree.keys()) if index in SHOW_ALL else top_level_ids(strategy_doc)
     vw = panel.get("visible_when")
+    rows = panel.get("rows") or []
     with ui.column().classes("w-full gap-1"):
-        ui.select(options, value=panel.get("block") or None, label="block", with_input=True,
+        ui.select(_options_with(options, panel.get("block")), value=panel.get("block") or None,
+                  label="block", with_input=True,
                   on_change=lambda e: _set(panel, "block", e.value, save)) \
-            .props("dense").classes("w-full")
+            .props("dense").classes("w-full") \
+            .tooltip("Ignored once this panel has rows below")
         ui.input(label="name", value=panel.get("name", ""),
                  on_change=lambda e: _set(panel, "name", e.value, save)) \
             .props("dense").classes("w-full")
         ui.switch("show every block", value=index in SHOW_ALL,
-                  on_change=lambda e, i=index: _toggle_all(i, e.value)).props("dense")
+                  on_change=lambda e, i=index: _toggle_all(i, e.value, refresh)).props("dense")
         ui.switch("conditionally visible", value=isinstance(vw, dict),
-                  on_change=lambda e, p=panel: _toggle_visible_when(p, e.value, save)) \
+                  on_change=lambda e, p=panel: _toggle_visible_when(p, e.value, save, refresh)) \
             .props("dense").tooltip("Only show this panel while another block is met")
         if isinstance(vw, dict):
             with ui.row().classes("items-center gap-2 w-full"):
-                ui.select(sorted(tree.keys()), value=vw.get("target") or None,
+                ui.select(_options_with(sorted(tree.keys()), vw.get("target")), value=vw.get("target") or None,
                           label="visible when", with_input=True,
-                          on_change=lambda e, p=panel: _set_visible_when(p, "target", e.value, save)) \
+                          on_change=lambda e, p=panel: _set_visible_when(p, "target", e.value, save, refresh)) \
                     .props("dense").classes("min-w-[200px]").style("flex:1")
                 ui.select(["state", "children_met"], value=vw.get("kind", "state"), label="kind",
-                          on_change=lambda e, p=panel: _set_visible_when(p, "kind", e.value, save)) \
+                          on_change=lambda e, p=panel: _set_visible_when(p, "kind", e.value, save, refresh)) \
                     .props("dense").classes("min-w-[120px]")
                 if vw.get("kind") == "children_met":
                     ui.number(label="min met", value=(vw.get("params") or {}).get("min_met", 1),
                              precision=0, format="%d", min=1,
                              on_change=lambda e, p=panel: _set_visible_when_min_met(p, e.value, save)) \
                         .props("dense").classes("min-w-[90px]")
+
+        ui.separator()
+        ui.label("Rows: multiple blocks in one panel (leave empty for the usual "
+                 "single block + full children view)").classes(MUTED)
+        for r_idx, row in enumerate(rows):
+            with ui.row().classes("items-center gap-2 w-full"):
+                ui.input(label="label", value=row.get("label", ""),
+                         on_change=lambda e, r=row: _set_row_field(r, "label", e.value, save)) \
+                    .props("dense").classes("min-w-[120px]")
+                ui.select(_options_with(sorted(tree.keys()), row.get("target")),
+                          value=row.get("target") or None, label="target", with_input=True,
+                          on_change=lambda e, r=row: _set_row_field(r, "target", e.value, save)) \
+                    .props("dense").classes("min-w-[160px]").style("flex:1")
+                ui.button(icon="delete",
+                          on_click=lambda p=panel, i=r_idx: _remove_row(p, i, save, refresh)) \
+                    .props("flat dense color=negative")
+        ui.button(icon="add", on_click=lambda p=panel: _add_row(p, save, refresh)) \
+            .props("flat dense").tooltip("Add row")
+
         with ui.row().classes("items-center gap-1 w-full justify-end"):
-            ui.button(icon="delete", on_click=lambda i=index: _remove_panel(panels, i, save)) \
+            ui.button(icon="delete",
+                      on_click=lambda i=index: _remove_panel_and_close(panels, i, save, dialog)) \
                 .props("flat dense color=negative")
-            ui.button("Done", icon="check", on_click=lambda i=index: _done(i)) \
+            ui.button("Done", icon="check", on_click=lambda: _finish_edit(dialog)) \
                 .props("flat dense")
-
-
-def editing() -> bool:
-    """True while a panel's editor is open, so a timer must not refresh over it."""
-    return bool(EDITING)

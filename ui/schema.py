@@ -581,14 +581,30 @@ class VisibilityCondition(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class PanelRow(BaseModel):
+    """One labelled target in a multi-row panel (see DashboardPanel.rows)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = ""
+    target: str
+
+
 class DashboardPanel(BaseModel):
-    """One monitor on the live dashboard grid."""
+    """
+    One monitor on the live dashboard grid. With rows empty (the default) it
+    shows the usual single block + full children grid. With rows set, it
+    instead shows one compact line per row -- a label, a score, and (if that
+    row's target has children) a met/total meter -- e.g. a tri-state
+    'T60 Up / Unclear / Down' readout in one panel.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     block: str = ""
     name: str = ""
     visible_when: Optional[VisibilityCondition] = None
+    rows: list[PanelRow] = []
 
 
 class Dashboard(BaseModel):
