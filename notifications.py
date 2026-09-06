@@ -43,6 +43,17 @@ METRICS: dict[str, Callable[[str, dict, dict, dict], bool]] = {
 }
 
 
+def is_met(kind: str, target: str, scores: dict, children: dict, params: dict) -> bool:
+    """
+    Evaluate one (kind, target, params) trigger against live state -- the same
+    computation a notification rule's edge detection is built on, reused
+    directly wherever something just needs a continuous met/not-met read (e.g.
+    dashboard panel visibility). False for an unknown kind, never a crash.
+    """
+    metric = METRICS.get(kind)
+    return bool(metric(target, scores, children, params)) if metric else False
+
+
 @dataclass
 class NotificationRule:
     id: str

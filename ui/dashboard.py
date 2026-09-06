@@ -16,6 +16,8 @@ from typing import Any
 
 from nicegui import ui
 
+from notifications import is_met
+
 MUTED = "text-sm text-gray-500"
 
 # ---------------------------------------------------------------------------
@@ -286,6 +288,7 @@ def dashboard_section(settings_doc, strategy_doc, service, save) -> None:
     tree = condition_tree(strategy_doc)
     disabled = disabled_ids(strategy_doc)
     LIVE["panels"] = []
+    LIVE["tree"] = tree
 
     with ui.row().classes("items-center gap-3 w-full"):
         ui.label("Dashboard").classes("font-medium")
@@ -322,8 +325,10 @@ def dashboard_section(settings_doc, strategy_doc, service, save) -> None:
 
 def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save) -> None:
     block = panel.get("block") or ""
+    visible_when = panel.get("visible_when")
     card = ui.card().classes("p-2 gap-1").style(panel_style(size))
     record = {"block": block, "card": card, "disabled": block in disabled,
+              "visible_when": visible_when if isinstance(visible_when, dict) else None,
               "score": None, "note": None, "children": []}
 
     with card:
@@ -378,23 +383,47 @@ def _children(record, block, tree) -> None:
             record["children"].append((child_id, box, value, meter, grandchild_ids))
 
 
+def _panel_visible(visible_when, scores, tree, engine_ran) -> bool:
+    """
+    A panel with no visible_when is always shown. One that has it stays
+    hidden until the engine has actually produced a value for its target --
+    showing a gated panel off of nothing would be misleading, not helpful.
+    """
+    if visible_when is None:
+        return True
+    if not engine_ran:
+        return False
+    target = visible_when.get("target")
+    if not target:
+        return False
+    kind = visible_when.get("kind", "state")
+    params = visible_when.get("params") or {}
+    return is_met(kind, target, scores, tree, params)
+
+
 def repaint(service) -> None:
     """
     Update scores and colours on the existing elements.
 
     Deliberately not a refresh: rebuilding the grid on every tick tore out the
     element being dragged, so a reorder only survived if it beat the timer.
+    Gated panels are handled the same way -- always present in the DOM, just
+    toggled via display:none -- so a visibility flip can never interrupt a
+    drag either, and drag order (make_sortable) is unaffected either way.
     """
     if not LIVE["panels"] and LIVE["ring"] is None:
         return
     scores = getattr(service, "node_scores", {}) or {}
     engine_ran = getattr(service, "last_run", None) is not None
+    tree = LIVE.get("tree") or {}
     try:
         if LIVE["ring"] is not None:
             _paint_countdown(service)
         for record in LIVE["panels"]:
             state, value = block_state(record["block"], scores, engine_ran)
-            record["card"].style(f"background:{state_colour(state, value)};"
+            visible = _panel_visible(record["visible_when"], scores, tree, engine_ran)
+            record["card"].style(f"display:{'flex' if visible else 'none'};"
+                                 f"background:{state_colour(state, value)};"
                                  f"color:{state_text_colour(state, value)};"
                                  f"opacity:{0.55 if record['disabled'] else 1}")
             record["score"].set_text(format_score(value))
@@ -506,9 +535,44 @@ def _toggle_all(index, value) -> None:
     dashboard_section.refresh()
 
 
+def _toggle_visible_when(panel, value, save) -> None:
+    """Turning this off removes the key entirely, matching 'no visible_when
+    means always shown' -- the field structurally changes, so this refreshes."""
+    from ruamel.yaml.comments import CommentedMap
+
+    if value:
+        panel["visible_when"] = CommentedMap([("target", ""), ("kind", "state")])
+    else:
+        panel.pop("visible_when", None)
+    save()
+    dashboard_section.refresh()
+
+
+def _set_visible_when(panel, key, value, save) -> None:
+    vw = panel.get("visible_when")
+    if not isinstance(vw, dict):
+        return
+    vw[key] = value
+    save()
+    if key == "kind":
+        dashboard_section.refresh()   # min-met field appears only for children_met
+
+
+def _set_visible_when_min_met(panel, value, save) -> None:
+    from ruamel.yaml.comments import CommentedMap
+
+    vw = panel.get("visible_when")
+    if not isinstance(vw, dict):
+        return
+    n = int(value) if value not in (None, "") else 1
+    vw.setdefault("params", CommentedMap())["min_met"] = max(1, n)
+    save()
+
+
 def _editor(index, panel, panels, tree, strategy_doc, save) -> None:
     """A panel's block/name form, in place of its usual score display."""
     options = sorted(tree.keys()) if index in SHOW_ALL else top_level_ids(strategy_doc)
+    vw = panel.get("visible_when")
     with ui.column().classes("w-full gap-1"):
         ui.select(options, value=panel.get("block") or None, label="block", with_input=True,
                   on_change=lambda e: _set(panel, "block", e.value, save)) \
@@ -518,6 +582,23 @@ def _editor(index, panel, panels, tree, strategy_doc, save) -> None:
             .props("dense").classes("w-full")
         ui.switch("show every block", value=index in SHOW_ALL,
                   on_change=lambda e, i=index: _toggle_all(i, e.value)).props("dense")
+        ui.switch("conditionally visible", value=isinstance(vw, dict),
+                  on_change=lambda e, p=panel: _toggle_visible_when(p, e.value, save)) \
+            .props("dense").tooltip("Only show this panel while another block is met")
+        if isinstance(vw, dict):
+            with ui.row().classes("items-center gap-2 w-full"):
+                ui.select(sorted(tree.keys()), value=vw.get("target") or None,
+                          label="visible when", with_input=True,
+                          on_change=lambda e, p=panel: _set_visible_when(p, "target", e.value, save)) \
+                    .props("dense").classes("min-w-[200px]").style("flex:1")
+                ui.select(["state", "children_met"], value=vw.get("kind", "state"), label="kind",
+                          on_change=lambda e, p=panel: _set_visible_when(p, "kind", e.value, save)) \
+                    .props("dense").classes("min-w-[120px]")
+                if vw.get("kind") == "children_met":
+                    ui.number(label="min met", value=(vw.get("params") or {}).get("min_met", 1),
+                             precision=0, format="%d", min=1,
+                             on_change=lambda e, p=panel: _set_visible_when_min_met(p, e.value, save)) \
+                        .props("dense").classes("min-w-[90px]")
         with ui.row().classes("items-center gap-1 w-full justify-end"):
             ui.button(icon="delete", on_click=lambda i=index: _remove_panel(panels, i, save)) \
                 .props("flat dense color=negative")

@@ -567,6 +567,20 @@ class Backtest(BaseModel):
     visualize: bool = False
 
 
+class VisibilityCondition(BaseModel):
+    """
+    Gates a dashboard panel: shown only while this evaluates true. Same shape
+    as a notification rule's trigger minus edge -- this is read continuously
+    every tick, not fired once on a transition.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    target: str
+    kind: Literal["state", "children_met"] = "state"
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
 class DashboardPanel(BaseModel):
     """One monitor on the live dashboard grid."""
 
@@ -574,6 +588,7 @@ class DashboardPanel(BaseModel):
 
     block: str = ""
     name: str = ""
+    visible_when: Optional[VisibilityCondition] = None
 
 
 class Dashboard(BaseModel):
