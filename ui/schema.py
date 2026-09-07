@@ -612,6 +612,7 @@ class DashboardPanel(BaseModel):
     name: str = ""
     visible_when: Optional[VisibilityCondition] = None
     rows: list[PanelRow] = []
+    hide_children: bool = False
 
 
 class Dashboard(BaseModel):

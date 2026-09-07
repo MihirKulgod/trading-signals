@@ -404,7 +404,8 @@ def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save) -> No
             with ui.row().classes("items-baseline gap-2 w-full no-wrap"):
                 record["score"] = ui.label("").classes("font-semibold dash-score")
                 record["note"] = ui.label("").classes("dash-note").style("opacity:0.85")
-            _children(record, block, tree)
+            if not panel.get("hide_children"):
+                _children(record, block, tree)
 
     LIVE["panels"].append(record)
 
@@ -436,6 +437,18 @@ def _invalid_targets(panel, tree) -> list[str]:
     return bad
 
 
+def _visible_children(tree, node_id: str) -> list[str]:
+    """
+    Direct children worth showing. An id ending '_inner'/'-inner' is a
+    synthetic wrapper a condition's own implementation introduces (e.g.
+    Below is built as Not(Above), and that Above gets id '{id}_inner') --
+    nobody wrote it in the strategy, so it's never worth surfacing as a
+    child block or counting in a met/total meter.
+    """
+    return [c for c in (tree.get(node_id) or [])
+            if not (c.endswith("_inner") or c.endswith("-inner"))]
+
+
 def _rows(record, rows_cfg, tree) -> None:
     """
     Several independently-labelled targets in one panel, e.g. a tri-state
@@ -449,7 +462,7 @@ def _rows(record, rows_cfg, tree) -> None:
             target = row_cfg.get("target") or ""
             label_text = row_cfg.get("label") or target
             invalid = bool(target) and target not in tree
-            child_ids = tree.get(target, []) if target else []
+            child_ids = _visible_children(tree, target) if target else []
             with ui.row().classes(f"{PANEL_CLASS_ROW} items-center justify-between w-full gap-1 no-wrap"):
                 ui.label(label_text).classes("dash-row-label truncate") \
                     .style(f"flex:1;min-width:0;{'color:#dc2626' if invalid else ''}") \
@@ -484,13 +497,13 @@ def _children(record, block, tree) -> None:
     score, e.g. '3/6', for how many of those grandchildren currently score
     positive.
     """
-    child_ids = tree.get(block, []) if block else []
+    child_ids = _visible_children(tree, block) if block else []
     if not child_ids:
         return
     with ui.row().classes("w-full gap-1 flex-wrap content-start") \
             .style("flex:1;min-height:0;overflow:hidden"):
         for child_id in child_ids:
-            grandchild_ids = tree.get(child_id, [])
+            grandchild_ids = _visible_children(tree, child_id)
             box = ui.column().classes(f"{PANEL_CLASS_CHILD} items-center justify-center rounded p-1 gap-0") \
                 .style("flex:1 1 0;min-width:52px")
             with box:
@@ -732,6 +745,11 @@ def _toggle_all(index, value, refresh) -> None:
     refresh()
 
 
+def _toggle_hide_children(panel, value, save) -> None:
+    panel["hide_children"] = value
+    save()
+
+
 def _toggle_visible_when(panel, value, save, refresh) -> None:
     """Turning this off removes the key entirely, matching 'no visible_when
     means always shown' -- the field structurally changes, so this refreshes."""
@@ -849,6 +867,9 @@ def _editor(index, panel, panels, tree, strategy_doc, save, dialog, refresh) -> 
             .props("dense").classes("w-full")
         ui.switch("show every block", value=index in SHOW_ALL,
                   on_change=lambda e, i=index: _toggle_all(i, e.value, refresh)).props("dense")
+        ui.switch("hide children", value=bool(panel.get("hide_children")),
+                  on_change=lambda e, p=panel: _toggle_hide_children(p, e.value, save)) \
+            .props("dense").tooltip("Show just the score, without a rectangle per child")
         ui.switch("conditionally visible", value=isinstance(vw, dict),
                   on_change=lambda e, p=panel: _toggle_visible_when(p, e.value, save, refresh)) \
             .props("dense").tooltip("Only show this panel while another block is met")
