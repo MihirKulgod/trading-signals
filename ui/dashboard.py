@@ -16,9 +16,10 @@ from typing import Any
 
 from nicegui import ui
 
+from description import readable_id
 from notifications import is_met
 
-MUTED = "text-sm text-gray-500"
+MUTED = "text-sm text-gray-300"
 
 # ---------------------------------------------------------------------------
 # Score -> colour
@@ -29,6 +30,7 @@ NEAR_ZERO = (240, 162, 2)       # just below zero: orangey yellow
 FAR_NEGATIVE = (107, 15, 15)    # deeply negative: dark blood red
 UNKNOWN_GREY = (130, 130, 130)  # no value to show
 SKIPPED_SLATE = (74, 85, 104)   # evaluation never reached this block
+MULTI_PANEL_DARK = (31, 41, 55)   # panels with several blocks: neutral shell, colour lives on each block
 
 # |score| at which the gradient has fully reached FAR_NEGATIVE. Scores are
 # normalised, so most live between -3 and +1; the log curve spends its
@@ -235,9 +237,43 @@ GHOST_CSS = f"""
 }}
 """
 
+PANEL_CLASS = "dash-panel"
+# Container queries: every text element below sizes itself off the *actual*
+# rendered space of its own panel (via cqh/cqw), not a single global number,
+# so a sparse panel's text grows to fill the room a packed one doesn't have.
+# The size slider still controls each panel's own box (panel_style); this is
+# what makes the box's content actually use that space instead of only ever
+# filling it at one fixed ratio. Tune the clamp(min, preferred, max) triples
+# directly here -- they're the only numbers that matter for how this looks.
+PANEL_CLASS_ROW = "dash-row"       # one row of a multi-row panel
+PANEL_CLASS_CHILD = "dash-child-box"  # one rectangle in the children grid
+
+PANEL_CSS = f"""
+.{PANEL_CLASS} {{ container-type: size; container-name: dash-panel; }}
+.dash-score {{ font-size: clamp(0.85rem, 14cqh, 2.4rem); line-height: 1.1; }}
+.dash-note  {{ font-size: clamp(0.55rem, 5cqh, 0.85rem); }}
+
+/* Rows share the panel's fixed leftover height (flex: 1 1 0 on each), so
+   a row's own box shrinks as more rows are added -- cqh here is that row's
+   own height, not the whole panel's, which is what makes text respond to
+   row *count*, not just to the panel getting bigger via the size slider. */
+.{PANEL_CLASS_ROW} {{ container-type: size; container-name: dash-row; flex: 1 1 0; min-height: 0; }}
+.dash-row-label {{ font-size: clamp(0.5rem, 70cqh, 1.45rem); }}
+.dash-row-value {{ font-size: clamp(0.5rem, 70cqh, 1.45rem); }}
+.dash-row-meter {{ font-size: clamp(0.45rem, 40cqh, 1.0rem); }}
+
+/* Same idea for the children grid: each box already shrinks in width as
+   more of them wrap into a row (flex: 1 1 0), so cqw against the box
+   itself (not the panel) is what makes text respond to child count. */
+.{PANEL_CLASS_CHILD} {{ container-type: inline-size; container-name: dash-child; }}
+.dash-child-label {{ font-size: clamp(0.45rem, 16cqw, 0.8rem); line-height: 1.1; }}
+.dash-child-value {{ font-size: clamp(0.5rem, 18cqw, 0.95rem); line-height: 1.2; }}
+.dash-child-meter  {{ font-size: clamp(0.35rem, 13cqw, 0.7rem); line-height: 1.1; }}
+"""
+
 # Element handles kept from the last build, so a tick can repaint values in
 # place. Rebuilding the grid each second cancelled any drag in progress.
-LIVE: dict[str, Any] = {"ring": None, "status": None, "panels": []}
+LIVE: dict[str, Any] = {"ring": None, "status": None, "panels": [], "show_hidden": False}
 
 
 def dashboard_config(settings_doc) -> Any:
@@ -264,10 +300,6 @@ def _panels(settings_doc) -> Any:
 
 def panel_style(size: float) -> str:
     return f"width:{round(PANEL_WIDTH * size)}px;height:{round(PANEL_HEIGHT * size)}px"
-
-
-def score_font(size: float) -> str:
-    return f"font-size:{1.5 * size:.2f}rem;line-height:1.1"
 
 
 def _countdown(service) -> None:
@@ -313,6 +345,11 @@ def dashboard_section(settings_doc, strategy_doc, service, save) -> None:
             .props("dense").style("width:130px") \
             .tooltip("Smaller panels fit more per row")
         slider.on("change", lambda _: _set_size(config, slider.value, save))
+        ui.switch("show hidden", value=LIVE["show_hidden"],
+                  on_change=lambda e, s=service: _toggle_show_hidden(e.value, s)) \
+            .props("dense").tooltip(
+                "Force-show panels a visibility condition is currently hiding, "
+                "so you can still edit them (marked with a dashed border)")
         ui.button(icon="add", on_click=lambda: _add_panel(panels, tree, strategy_doc, save)) \
             .props("flat dense").tooltip("Add a panel")
         ui.button(icon="grid_view",
@@ -339,7 +376,7 @@ def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save) -> No
     block = panel.get("block") or ""
     visible_when = panel.get("visible_when")
     rows_cfg = panel.get("rows") or []
-    card = ui.card().classes("p-2 gap-1").style(panel_style(size))
+    card = ui.card().classes(f"p-2 gap-1 {PANEL_CLASS}").style(panel_style(size))
     record = {"block": block, "card": card, "disabled": block in disabled,
               "visible_when": visible_when if isinstance(visible_when, dict) else None,
               "score": None, "note": None, "children": [], "rows": []}
@@ -365,8 +402,8 @@ def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save) -> No
             _rows(record, rows_cfg, tree)
         else:
             with ui.row().classes("items-baseline gap-2 w-full no-wrap"):
-                record["score"] = ui.label("").classes("font-semibold").style(score_font(size))
-                record["note"] = ui.label("").classes("text-xs").style("opacity:0.85")
+                record["score"] = ui.label("").classes("font-semibold dash-score")
+                record["note"] = ui.label("").classes("dash-note").style("opacity:0.85")
             _children(record, block, tree)
 
     LIVE["panels"].append(record)
@@ -404,22 +441,37 @@ def _rows(record, rows_cfg, tree) -> None:
     met/total meter for its own children (same math _children() uses), not
     a full rectangle-per-child grid.
     """
-    with ui.column().classes("w-full gap-0"):
+    with ui.column().classes("w-full gap-0").style("flex:1;min-height:0;overflow:hidden"):
         for row_cfg in rows_cfg:
             target = row_cfg.get("target") or ""
             label_text = row_cfg.get("label") or target
             invalid = bool(target) and target not in tree
             child_ids = tree.get(target, []) if target else []
-            with ui.row().classes("items-center justify-between w-full gap-1 no-wrap"):
-                ui.label(label_text).classes("text-xs truncate") \
+            with ui.row().classes(f"{PANEL_CLASS_ROW} items-center justify-between w-full gap-1 no-wrap"):
+                ui.label(label_text).classes("dash-row-label truncate") \
                     .style(f"flex:1;min-width:0;{'color:#dc2626' if invalid else ''}") \
                     .tooltip("Unknown id" if invalid else target)
                 meter = None
                 if child_ids:
-                    meter = ui.label("").style("font-size:9px;opacity:0.85") \
+                    meter = ui.label("").classes("dash-row-meter").style("opacity:0.85") \
                         .tooltip(f"met / total of {target}'s own children")
-                value = ui.label("").classes("text-xs font-semibold px-1 rounded")
+                value = ui.label("").classes("dash-row-value font-semibold px-1 rounded")
             record["rows"].append((target, value, meter, child_ids))
+
+
+def _short_child_label(child_id: str, parent_id: str) -> str:
+    """
+    Drop whatever leading '-'-separated tokens a child shares with its
+    parent (e.g. c01-t15's child c01-t15-ema-up reads as just "Ema Up"),
+    then run the rest through readable_id -- so a block's own id prefix
+    doesn't get repeated across every one of its children's labels.
+    """
+    child_parts = child_id.split("-")
+    parent_parts = parent_id.split("-") if parent_id else []
+    i = 0
+    while i < len(child_parts) - 1 and i < len(parent_parts) and child_parts[i] == parent_parts[i]:
+        i += 1
+    return readable_id("-".join(child_parts[i:]) or child_id)
 
 
 def _children(record, block, tree) -> None:
@@ -436,15 +488,15 @@ def _children(record, block, tree) -> None:
             .style("flex:1;min-height:0;overflow:hidden"):
         for child_id in child_ids:
             grandchild_ids = tree.get(child_id, [])
-            box = ui.column().classes("items-center justify-center rounded p-1 gap-0") \
+            box = ui.column().classes(f"{PANEL_CLASS_CHILD} items-center justify-center rounded p-1 gap-0") \
                 .style("flex:1 1 0;min-width:52px")
             with box:
-                ui.label(child_id).classes("truncate w-full text-center") \
-                    .style("font-size:9px;line-height:1.1").tooltip(child_id)
-                value = ui.label("").style("font-size:10px;font-weight:600;line-height:1.2")
+                ui.label(_short_child_label(child_id, block)).classes("dash-child-label truncate w-full text-center") \
+                    .tooltip(child_id)
+                value = ui.label("").classes("dash-child-value font-semibold")
                 meter = None
                 if grandchild_ids:
-                    meter = ui.label("").style("font-size:8px;opacity:0.85;line-height:1.1") \
+                    meter = ui.label("").classes("dash-child-meter").style("opacity:0.85") \
                         .tooltip(f"met / total of {child_id}'s own children")
             record["children"].append((child_id, box, value, meter, grandchild_ids))
 
@@ -467,6 +519,17 @@ def _panel_visible(visible_when, scores, tree, engine_ran) -> bool:
     return is_met(kind, target, scores, tree, params)
 
 
+def _toggle_show_hidden(value: bool, service) -> None:
+    """
+    Panels a visibility condition is hiding aren't just invisible, they're
+    display:none -- completely uninteractive, so their own edit button can't
+    be clicked either. This is the only way back in to fix one until its
+    condition happens to become true on its own.
+    """
+    LIVE["show_hidden"] = value
+    repaint(service)
+
+
 def repaint(service) -> None:
     """
     Update scores and colours on the existing elements.
@@ -487,10 +550,21 @@ def repaint(service) -> None:
             _paint_countdown(service)
         for record in LIVE["panels"]:
             state, value = block_state(record["block"], scores, engine_ran)
-            visible = _panel_visible(record["visible_when"], scores, tree, engine_ran)
+            actually_visible = _panel_visible(record["visible_when"], scores, tree, engine_ran)
+            forced = LIVE["show_hidden"] and not actually_visible
+            visible = actually_visible or LIVE["show_hidden"]
+            border = "border:2px dashed #6b7280;" if forced else "border:2px solid transparent;"
+            # A panel showing several blocks (rows, or a block plus its
+            # children) shouldn't have its whole shell tinted by one of
+            # them -- that read as the combination's min score bleeding
+            # over everything else, drowning out each block's own colour.
+            multi = bool(record["rows"]) or bool(record["children"])
+            bg = _css(MULTI_PANEL_DARK) if multi else state_colour(state, value)
+            fg = "#e5e7eb" if multi else state_text_colour(state, value)
             record["card"].style(f"display:{'flex' if visible else 'none'};"
-                                 f"background:{state_colour(state, value)};"
-                                 f"color:{state_text_colour(state, value)};"
+                                 f"{border}"
+                                 f"background:{bg};"
+                                 f"color:{fg};"
                                  f"opacity:{0.55 if record['disabled'] else 1}")
             if record["score"] is not None:
                 record["score"].set_text(format_score(value))
@@ -525,11 +599,14 @@ def repaint(service) -> None:
 
 
 def resize(size: float) -> None:
-    """Panel size is only CSS, so apply it without rebuilding the grid."""
+    """
+    Panel size is only CSS, so apply it without rebuilding the grid. Text
+    inside no longer needs a separate push: it's sized off the container's
+    own dimensions (see PANEL_CSS), so changing the box here is enough for
+    font sizes to follow on their own.
+    """
     for record in LIVE["panels"]:
         record["card"].style(panel_style(size))
-        if record["score"] is not None:
-            record["score"].style(score_font(size))
 
 
 # --- mutations -------------------------------------------------------------
