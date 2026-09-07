@@ -26,16 +26,18 @@ MUTED = "text-sm text-gray-300"
 # ---------------------------------------------------------------------------
 
 OPEN_GREEN = (67, 160, 71)      # any score at or above zero
-NEAR_ZERO = (240, 162, 2)       # just below zero: orangey yellow
+NEAR_ZERO = (246, 241, 51)      # just below zero: bright yellow (~#f6f133)
 FAR_NEGATIVE = (107, 15, 15)    # deeply negative: dark blood red
 UNKNOWN_GREY = (130, 130, 130)  # no value to show
 SKIPPED_SLATE = (74, 85, 104)   # evaluation never reached this block
 MULTI_PANEL_DARK = (31, 41, 55)   # panels with several blocks: neutral shell, colour lives on each block
 
-# |score| at which the gradient has fully reached FAR_NEGATIVE. Scores are
-# normalised, so most live between -3 and +1; the log curve spends its
-# resolution there and flattens out beyond.
-SATURATION = 10.0
+# |score| at which the gradient has fully reached FAR_NEGATIVE. Most
+# borderline signals cluster in -1..0, so the log curve spends essentially
+# all of its resolution there -- a -0.1 and a -0.4 need to look visibly
+# different -- and anything past -1 is already indistinguishably "very
+# negative" anyway.
+SATURATION = 1.0
 
 
 def _rgb(score: Any) -> tuple[int, int, int]:
@@ -273,7 +275,8 @@ PANEL_CSS = f"""
 
 # Element handles kept from the last build, so a tick can repaint values in
 # place. Rebuilding the grid each second cancelled any drag in progress.
-LIVE: dict[str, Any] = {"ring": None, "status": None, "panels": [], "show_hidden": False}
+LIVE: dict[str, Any] = {"ring": None, "status": None, "panels": [], "show_hidden": False,
+                        "compact_children": []}
 
 
 def dashboard_config(settings_doc) -> Any:
@@ -291,6 +294,7 @@ def dashboard_config(settings_doc) -> Any:
     settings_doc["dashboard"] = node
     node.setdefault("size", 1.0)
     node.setdefault("panels", CommentedSeq())
+    node.setdefault("compact_children", CommentedSeq())
     return node
 
 
@@ -330,8 +334,10 @@ def dashboard_section(settings_doc, strategy_doc, service, save) -> None:
     size = float(config.get("size", 1.0) or 1.0)
     tree = condition_tree(strategy_doc)
     disabled = disabled_ids(strategy_doc)
+    compact_children = config["compact_children"]
     LIVE["panels"] = []
     LIVE["tree"] = tree
+    LIVE["compact_children"] = compact_children
 
     with ui.row().classes("items-center gap-3 w-full"):
         ui.label("Dashboard").classes("font-medium")
@@ -368,11 +374,11 @@ def dashboard_section(settings_doc, strategy_doc, service, save) -> None:
     )
     with grid:
         for index, panel in enumerate(panels):
-            _panel(index, panel, panels, tree, disabled, strategy_doc, size, save)
+            _panel(index, panel, panels, tree, disabled, strategy_doc, size, save, compact_children)
     repaint(service)
 
 
-def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save) -> None:
+def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save, compact_children) -> None:
     block = panel.get("block") or ""
     visible_when = panel.get("visible_when")
     rows_cfg = panel.get("rows") or []
@@ -407,7 +413,7 @@ def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save) -> No
                 record["score"] = ui.label("").classes("font-semibold dash-score")
                 record["note"] = ui.label("").classes("dash-note").style("opacity:0.85")
             if not panel.get("hide_children"):
-                _children(record, block, tree)
+                _children(record, block, tree, compact_children, save)
 
     LIVE["panels"].append(record)
 
@@ -492,7 +498,20 @@ def _short_child_label(child_id: str, parent_id: str) -> str:
     return readable_id("-".join(child_parts[i:]) or child_id)
 
 
-def _children(record, block, tree) -> None:
+def _toggle_compact(child_id: str, compact_children, save) -> None:
+    """
+    Flips a child between showing its score and showing just name + a
+    met/total meter -- persisted so the choice survives a reload, not just
+    kept for this browser session.
+    """
+    if child_id in compact_children:
+        compact_children.remove(child_id)
+    else:
+        compact_children.append(child_id)
+    save()
+
+
+def _children(record, block, tree, compact_children, save) -> None:
     """
     One rectangle per direct child. Children keep to a single level, but a
     child with children of its own also gets a met/total meter beneath its
@@ -501,6 +520,10 @@ def _children(record, block, tree) -> None:
     score, so the meter's count can be checked without opening the editor.
     Just names and numbers, no descriptions, and short enough to never need
     to scroll inside the tooltip itself.
+
+    Clicking a child with a meter toggles it into a compact mode -- name and
+    meter only, no score -- coloured off the met/total fraction instead of
+    the child's own score.
     """
     child_ids = _visible_children(tree, block) if block else []
     if not child_ids:
@@ -511,6 +534,9 @@ def _children(record, block, tree) -> None:
             grandchild_ids = _visible_children(tree, child_id)
             box = ui.column().classes(f"{PANEL_CLASS_CHILD} items-center justify-center rounded p-1 gap-0") \
                 .style("flex:1 1 0;min-width:52px")
+            if grandchild_ids:
+                box.classes("cursor-pointer") \
+                    .on("click", lambda cid=child_id: _toggle_compact(cid, compact_children, save))
             gc_labels = []
             with box:
                 if grandchild_ids:
@@ -584,6 +610,7 @@ def repaint(service) -> None:
     scores = getattr(service, "node_scores", {}) or {}
     engine_ran = getattr(service, "last_run", None) is not None
     tree = LIVE.get("tree") or {}
+    compact_children = LIVE.get("compact_children") or []
     try:
         if LIVE["ring"] is not None:
             _paint_countdown(service)
@@ -618,12 +645,8 @@ def repaint(service) -> None:
                     else ("" if state == "value" else STATE_LABEL[state]))
             for child_id, box, label, meter, grandchild_ids, gc_labels in record["children"]:
                 child_state, child_value = block_state(child_id, scores, engine_ran)
-                box.style(f"background:{state_colour(child_state, child_value)};"
-                          f"color:{state_text_colour(child_state, child_value)}")
-                label.set_text("\u00b7" if child_state == "skipped"
-                               else format_score(child_value))
+                met = 0
                 if meter is not None:
-                    met = 0
                     for gid, gc_label in zip(grandchild_ids, gc_labels):
                         gc_state, gc_value = block_state(gid, scores, engine_ran)
                         gc_label.set_text("\u00b7" if gc_state == "skipped"
@@ -631,6 +654,21 @@ def repaint(service) -> None:
                         if gc_state == "value" and gc_value >= 0:
                             met += 1
                     meter.set_text(f"{met}/{len(grandchild_ids)}")
+                compact = bool(grandchild_ids) and child_id in compact_children
+                if compact:
+                    # Same green-to-red scale a score uses, just fed the
+                    # met/total fraction instead: X/X lands on the score>=0
+                    # boundary, 0/X on the fully-saturated negative end.
+                    pseudo_score = (met / len(grandchild_ids) - 1) * SATURATION
+                    box.style(f"background:{score_colour(pseudo_score)};"
+                              f"color:{text_colour(pseudo_score)}")
+                else:
+                    box.style(f"background:{state_colour(child_state, child_value)};"
+                              f"color:{state_text_colour(child_state, child_value)}")
+                label.set_visibility(not compact)
+                if not compact:
+                    label.set_text("\u00b7" if child_state == "skipped"
+                                   else format_score(child_value))
             for target, value_el, meter, child_ids in record["rows"]:
                 row_state, row_value = block_state(target, scores, engine_ran)
                 value_el.style(f"background:{state_colour(row_state, row_value)};"

@@ -622,6 +622,10 @@ class Dashboard(BaseModel):
 
     size: float = Field(default=1.0, ge=0.6, le=1.4)
     panels: list[DashboardPanel] = []
+    # Child ids currently showing name + met/total only (colour from that
+    # fraction) instead of the usual score -- toggled by clicking the child,
+    # persisted so the choice survives a reload.
+    compact_children: list[str] = []
 
 
 class NotificationRule(BaseModel):
