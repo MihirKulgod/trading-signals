@@ -16,7 +16,7 @@ from typing import Any
 
 from nicegui import ui
 
-from description import readable_id
+from description import describe_block, readable_id
 from notifications import is_met
 
 MUTED = "text-sm text-gray-300"
@@ -251,7 +251,7 @@ PANEL_CLASS_CHILD = "dash-child-box"  # one rectangle in the children grid
 PANEL_CSS = f"""
 .{PANEL_CLASS} {{ container-type: size; container-name: dash-panel; }}
 .dash-score {{ font-size: clamp(0.85rem, 14cqh, 2.4rem); line-height: 1.1; }}
-.dash-note  {{ font-size: clamp(0.55rem, 5cqh, 0.85rem); }}
+.dash-note  {{ font-size: clamp(0.55rem, 8cqh, 1.25rem); }}
 
 /* Rows share the panel's fixed leftover height (flex: 1 1 0 on each), so
    a row's own box shrinks as more rows are added -- cqh here is that row's
@@ -266,9 +266,9 @@ PANEL_CSS = f"""
    more of them wrap into a row (flex: 1 1 0), so cqw against the box
    itself (not the panel) is what makes text respond to child count. */
 .{PANEL_CLASS_CHILD} {{ container-type: inline-size; container-name: dash-child; }}
-.dash-child-label {{ font-size: clamp(0.45rem, 16cqw, 0.8rem); line-height: 1.1; }}
-.dash-child-value {{ font-size: clamp(0.5rem, 18cqw, 0.95rem); line-height: 1.2; }}
-.dash-child-meter  {{ font-size: clamp(0.35rem, 13cqw, 0.7rem); line-height: 1.1; }}
+.dash-child-label {{ font-size: clamp(0.45rem, 18cqw, 0.9rem); line-height: 1.1; }}
+.dash-child-value {{ font-size: clamp(0.5rem, 18cqw, 1.15rem); line-height: 1.2; }}
+.dash-child-meter  {{ font-size: clamp(0.45rem, 16cqw, 0.95rem); line-height: 1.1; }}
 """
 
 # Element handles kept from the last build, so a tick can repaint values in
@@ -405,7 +405,7 @@ def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save) -> No
                 record["score"] = ui.label("").classes("font-semibold dash-score")
                 record["note"] = ui.label("").classes("dash-note").style("opacity:0.85")
             if not panel.get("hide_children"):
-                _children(record, block, tree)
+                _children(record, block, tree, strategy_doc)
 
     LIVE["panels"].append(record)
 
@@ -490,7 +490,20 @@ def _short_child_label(child_id: str, parent_id: str) -> str:
     return readable_id("-".join(child_parts[i:]) or child_id)
 
 
-def _children(record, block, tree) -> None:
+def _child_description(child_id: str, strategy_doc) -> str:
+    """
+    Markdown for exactly what this child checks -- the same rendering the
+    strategy doc uses, but scoped to just this one node, not its siblings or
+    the rest of the panel, so the tooltip is only ever as big as that child's
+    own logic actually needs.
+    """
+    from condition import find_condition_spec
+
+    spec = find_condition_spec(strategy_doc, child_id)
+    return describe_block(spec, strategy_doc) if spec is not None else f"`{child_id}`"
+
+
+def _children(record, block, tree, strategy_doc) -> None:
     """
     One rectangle per direct child. Children keep to a single level, but a
     child with children of its own also gets a met/total meter beneath its
@@ -507,8 +520,9 @@ def _children(record, block, tree) -> None:
             box = ui.column().classes(f"{PANEL_CLASS_CHILD} items-center justify-center rounded p-1 gap-0") \
                 .style("flex:1 1 0;min-width:52px")
             with box:
-                ui.label(_short_child_label(child_id, block)).classes("dash-child-label truncate w-full text-center") \
-                    .tooltip(child_id)
+                with ui.tooltip().style("max-width:300px"):
+                    ui.markdown(_child_description(child_id, strategy_doc)).classes("text-xs")
+                ui.label(_short_child_label(child_id, block)).classes("dash-child-label truncate w-full text-center")
                 value = ui.label("").classes("dash-child-value font-semibold")
                 meter = None
                 if grandchild_ids:
