@@ -262,8 +262,9 @@ PANEL_CLASS_CHILD = "dash-child-box"  # one rectangle in the children grid
 
 PANEL_CSS = f"""
 .{PANEL_CLASS} {{ container-type: size; container-name: dash-panel; }}
-.dash-score {{ font-size: clamp(0.85rem, 14cqh, 2.4rem); line-height: 1.1; }}
-.dash-note  {{ font-size: clamp(0.55rem, 8cqh, 1.25rem); }}
+.dash-name  {{ font-size: clamp(0.9rem, 7cqw, 1.5rem); line-height: 1.2; }}
+.dash-score {{ font-size: clamp(0.75rem, 11cqh, 2rem); line-height: 1.1; }}
+.dash-note  {{ font-size: clamp(0.5rem, 7cqh, 1.1rem); }}
 
 /* Rows share the panel's fixed leftover height (flex: 1 1 0 on each), so
    a row's own box shrinks as more rows are added -- cqh here is that row's
@@ -402,7 +403,7 @@ def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save, compa
             ui.icon("drag_indicator").classes(f"{HANDLE} cursor-move") \
                 .style("opacity:0.6").tooltip("Drag to reorder")
             ui.label(panel.get("name") or "(unnamed)") \
-                .classes("font-medium truncate").style("flex:1;min-width:0")
+                .classes("font-medium truncate dash-name").style("flex:1;min-width:0")
             bad_ids = _invalid_targets(panel, tree)
             if bad_ids:
                 ui.badge("Invalid").props("color=negative") \
