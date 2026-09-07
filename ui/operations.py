@@ -24,7 +24,9 @@ from jobs import RUNNER
 log = get_logger(__name__)
 
 BACKTEST_JOB = "backtest"
-MUTED = "text-sm text-gray-500"
+MUTED = "text-sm text-gray-300"
+SUBCARD_BG = "#37455C"
+SELECTED_BG = "rgba(205, 41, 72, 0.25)"   # tint of the primary colour, for the current chart in a list
 
 def _load_configs():
     config = yaml.safe_load(app_paths.strategy_path().read_text(encoding="utf-8"))
@@ -710,7 +712,7 @@ def _indicator_inspector() -> None:
                     .props("flat dense").tooltip("One row earlier")
         with ui.row().classes("items-center gap-3 w-full"):
             value = ui.label("").classes(
-                "text-2xl font-semibold px-3 py-1 rounded bg-gray-100 text-gray-900")
+                "text-2xl font-semibold px-3 py-1 rounded").style(f"background:{SUBCARD_BG}")
             caption = ui.label("").classes(MUTED)
             ui.space()
             counter = ui.label("").classes(MUTED)
@@ -1038,13 +1040,13 @@ def _rendered_chart_viewer(block: str, images: list) -> None:
             for path in images:
                 hit = "HIT" in path.name
                 current = path.name == selected.name
-                with ui.row().classes("items-center gap-2 cursor-pointer rounded px-1"
-                                      + (" bg-blue-100" if current else "")) \
+                with ui.row().classes("items-center gap-2 cursor-pointer rounded px-1") \
+                        .style(f"background:{SELECTED_BG}" if current else "") \
                         .on("click", lambda n=path.name: _show_image(n)):
                     ui.badge("hit" if hit else "—").props(
                         "color=positive" if hit else "color=grey")
                     ui.label(path.stem).classes(
-                        "text-sm" + ("" if hit else " text-gray-500"))
+                        "text-sm" + ("" if hit else " text-gray-300"))
         with ui.column().classes("grow"):
             ui.label(selected.stem).classes("font-medium")
             # Chart names carry spaces, so the src has to be percent-encoded.
@@ -1073,13 +1075,13 @@ def _placeholder_chart_viewer(block: str, days: list) -> None:
                 label = windows.get(day, {}).get("label", day)
                 hit = "HIT" in label
                 current = day == selected_day
-                with ui.row().classes("items-center gap-2 cursor-pointer rounded px-1"
-                                      + (" bg-blue-100" if current else "")) \
+                with ui.row().classes("items-center gap-2 cursor-pointer rounded px-1") \
+                        .style(f"background:{SELECTED_BG}" if current else "") \
                         .on("click", lambda d=day: _show_image(d)):
                     ui.badge("hit" if hit else "—").props(
                         "color=positive" if hit else "color=grey")
                     ui.label(label).classes(
-                        "text-sm" + ("" if hit else " text-gray-500"))
+                        "text-sm" + ("" if hit else " text-gray-300"))
         with ui.column().classes("grow"):
             ui.label(selected_label).classes("font-medium")
             ui.image(f"{CHARTS_ROUTE}/{quote(PLACEHOLDER_IMAGE)}").classes("w-full")

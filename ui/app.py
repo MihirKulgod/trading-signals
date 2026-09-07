@@ -28,7 +28,11 @@ import description
 import secrets_store
 from ui import operations, persistence, vocabulary
 
-MUTED = "text-sm text-gray-500"
+MUTED = "text-sm text-gray-300"
+
+# Theme: dark navy shell, a slightly lighter navy for nested item cards so
+# they still read as grouped within the section around them, crimson primary.
+SUBCARD_BG = "#37455C"
 
 # ---------------------------------------------------------------------------
 # Editor state: the two raw documents are the single source of truth.
@@ -116,7 +120,7 @@ def _display_tab() -> None:
                 .props("flat dense").tooltip("Add panel")
         panels = display.setdefault("display_panels", CommentedSeq())
         for p_idx, panel in enumerate(panels):
-            with ui.card().classes("w-full bg-gray-50"):
+            with ui.card().classes("w-full").style(f"background:{SUBCARD_BG}"):
                 with ui.row().classes("items-center gap-2 w-full"):
                     ui.label(f"Panel {p_idx}").classes(MUTED)
                     ui.space()
@@ -226,7 +230,7 @@ def _general_tab() -> None:
 
 def _instrument_editor(exchange: CommentedMap, idx: int, instr: CommentedMap) -> None:
     is_spot = instr.get("trading_symbol") is not None
-    with ui.card().classes("w-full bg-gray-50"):
+    with ui.card().classes("w-full").style(f"background:{SUBCARD_BG}"):
         with ui.row().classes("items-center gap-2 w-full"):
             _text("id", instr, "id").props("dense")
             ui.toggle({"spot": "spot", "rolling": "rolling"},
@@ -348,7 +352,7 @@ def _indicators_tab() -> None:
 
 
 def _indicator_editor(ta: CommentedSeq, idx: int, ind: CommentedMap) -> None:
-    with ui.card().classes("w-full bg-gray-50"):
+    with ui.card().classes("w-full").style(f"background:{SUBCARD_BG}"):
         with ui.row().classes("items-center gap-2 w-full"):
             _select("kind", vocabulary.INDICATOR_KIND_OPTIONS, ind, "kind",
                     with_input=True).props("dense")
@@ -714,7 +718,7 @@ def _operand_editor(parent: CommentedMap, key: str, label: str, depth: int = 0, 
         parent[key] = op
 
     s = DOCS["strategy"]
-    with ui.card().classes("w-full bg-gray-50"):
+    with ui.card().classes("w-full").style(f"background:{SUBCARD_BG}"):
         with ui.row().classes("items-center gap-2"):
             ui.label(label).classes("font-medium")
             if force_reference:
@@ -869,9 +873,9 @@ def _ref_preview(node: CommentedMap) -> None:
     target = (node.get("args") or {}).get("target")
     if not target:
         return
-    with ui.card().classes(f"w-full bg-gray-100 {PREVIEW_CLASSES}"):
+    with ui.card().classes(f"w-full {PREVIEW_CLASSES}").style(f"background:{SUBCARD_BG}"):
         ui.label(f"preview of '{target}' — edit under Strategy · Definitions") \
-            .classes("text-xs text-gray-500")
+            .classes("text-xs text-gray-300")
         for row in _target_rows(target, 0, frozenset()):
             with ui.row().classes("items-baseline gap-2 w-full") \
                     .style(f"margin-left:{row['depth'] * 14}px"):
@@ -884,7 +888,7 @@ def _ref_preview(node: CommentedMap) -> None:
                 ui.badge(row["type"]).props("color=grey")
                 ui.label(row["id"]).classes("text-sm")
                 if row["detail"]:
-                    ui.label(row["detail"]).classes("text-xs text-gray-500")
+                    ui.label(row["detail"]).classes("text-xs text-gray-300")
 
 
 def _nested_condition_editor(args: CommentedMap, key: str, depth: int, refresh_node=None) -> None:
@@ -1000,7 +1004,7 @@ def _condition_editor_body(node: CommentedMap, depth: int, on_remove=None, show_
         with ui.row().classes("items-center gap-2 w-full"):
             if draggable:
                 ui.icon("drag_indicator") \
-                    .classes(f"{_handle_class(depth)} cursor-move text-gray-400") \
+                    .classes(f"{_handle_class(depth)} cursor-move text-gray-300") \
                     .tooltip("Drag to reorder")
             ui.button(icon="chevron_right" if collapsed else "expand_more",
                       on_click=lambda n=node: _toggle_collapsed(n)) \
@@ -1016,7 +1020,7 @@ def _condition_editor_body(node: CommentedMap, depth: int, on_remove=None, show_
             if usage_condition_ids is not None:
                 count = len(usage_condition_ids)
                 ui.label(f"Used in {count} condition{'' if count == 1 else 's'}") \
-                    .classes("text-xs text-gray-400 cursor-pointer") \
+                    .classes("text-xs text-gray-300 cursor-pointer") \
                     .on("click", lambda n=node, u=usage_condition_ids: _notify_usage(n.get("id"), u))
             ui.space()
             if is_combinator and _accepts_more_children(cond_type, len(node.get("args") or [])):
@@ -1304,8 +1308,11 @@ def _banners() -> None:
 def index() -> None:
     from ui import dashboard
 
+    ui.dark_mode().enable()
+    ui.colors(primary="#e11a3f", dark="#2B3544", dark_page="#463c4a", negative="#e55c00")
     ui.add_css(_IMPORT_EXPORT_CSS)
     ui.add_css(dashboard.GHOST_CSS)
+    ui.add_css(dashboard.PANEL_CSS)
     _load_docs()
     _collapse_all()
     STATE["current"] = "Settings · Display"
