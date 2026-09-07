@@ -263,7 +263,7 @@ PANEL_CLASS_CHILD = "dash-child-box"  # one rectangle in the children grid
 PANEL_CSS = f"""
 .{PANEL_CLASS} {{ container-type: size; container-name: dash-panel; }}
 .dash-name  {{ font-size: clamp(0.9rem, 7cqw, 1.5rem); line-height: 1.2; }}
-.dash-score {{ font-size: clamp(0.75rem, 11cqh, 2rem); line-height: 1.1; }}
+.dash-score {{ font-size: clamp(0.75rem, 15cqh, 2rem); line-height: 1.1; }}
 .dash-note  {{ font-size: clamp(0.5rem, 7cqh, 1.1rem); }}
 
 /* Rows share the panel's fixed leftover height (flex: 1 1 0 on each), so
@@ -280,7 +280,7 @@ PANEL_CSS = f"""
    itself (not the panel) is what makes text respond to child count. */
 .{PANEL_CLASS_CHILD} {{ container-type: inline-size; container-name: dash-child; }}
 .dash-child-label {{ font-size: clamp(0.5rem, 20cqw, 1.05rem); line-height: 1.15; }}
-.dash-child-value {{ font-size: clamp(0.55rem, 20cqw, 1.3rem); line-height: 1.25; }}
+.dash-child-value {{ font-size: clamp(0.55rem, 15cqw, 1.3rem); line-height: 1.25; }}
 .dash-child-meter  {{ font-size: clamp(0.5rem, 18cqw, 1.1rem); line-height: 1.15; }}
 """
 
