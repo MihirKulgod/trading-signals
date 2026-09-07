@@ -430,6 +430,9 @@ def _invalid_targets(panel, tree) -> list[str]:
         target = vw.get("target") or ""
         if target and target not in tree:
             bad.append(target)
+        also_target = vw.get("also_target") or ""
+        if also_target and also_target not in tree:
+            bad.append(also_target)
     return bad
 
 
@@ -506,6 +509,10 @@ def _panel_visible(visible_when, scores, tree, engine_ran) -> bool:
     A panel with no visible_when is always shown. One that has it stays
     hidden until the engine has actually produced a value for its target --
     showing a gated panel off of nothing would be misleading, not helpful.
+
+    ``also_target`` is an optional second condition ANDed with the first --
+    e.g. a combination that's only live once its T60 regime AND the
+    post-open time gate both hold, which a single target can't express.
     """
     if visible_when is None:
         return True
@@ -516,7 +523,15 @@ def _panel_visible(visible_when, scores, tree, engine_ran) -> bool:
         return False
     kind = visible_when.get("kind", "state")
     params = visible_when.get("params") or {}
-    return is_met(kind, target, scores, tree, params)
+    if not is_met(kind, target, scores, tree, params):
+        return False
+    also_target = visible_when.get("also_target")
+    if also_target:
+        also_kind = visible_when.get("also_kind", "state")
+        also_params = visible_when.get("also_params") or {}
+        if not is_met(also_kind, also_target, scores, tree, also_params):
+            return False
+    return True
 
 
 def _toggle_show_hidden(value: bool, service) -> None:
@@ -745,6 +760,33 @@ def _set_visible_when_min_met(panel, value, save) -> None:
     save()
 
 
+def _toggle_also_visible_when(panel, value, save, refresh) -> None:
+    """Turning this off drops also_target entirely, matching 'no also_target
+    means single-condition visibility' -- the field structurally changes."""
+    vw = panel.get("visible_when")
+    if not isinstance(vw, dict):
+        return
+    if value:
+        vw["also_target"], vw["also_kind"] = "", "state"
+    else:
+        vw.pop("also_target", None)
+        vw.pop("also_kind", None)
+        vw.pop("also_params", None)
+    save()
+    refresh()
+
+
+def _set_also_visible_when_min_met(panel, value, save) -> None:
+    from ruamel.yaml.comments import CommentedMap
+
+    vw = panel.get("visible_when")
+    if not isinstance(vw, dict):
+        return
+    n = int(value) if value not in (None, "") else 1
+    vw.setdefault("also_params", CommentedMap())["min_met"] = max(1, n)
+    save()
+
+
 def _add_row(panel, save, refresh) -> None:
     """Rows replace the usual single-block view, so the block field stays
     (harmless -- rendering ignores it once rows are non-empty) but adding
@@ -818,6 +860,23 @@ def _editor(index, panel, panels, tree, strategy_doc, save, dialog, refresh) -> 
                              precision=0, format="%d", min=1,
                              on_change=lambda e, p=panel: _set_visible_when_min_met(p, e.value, save)) \
                         .props("dense").classes("min-w-[90px]")
+            ui.switch("also require", value=bool(vw.get("also_target")),
+                      on_change=lambda e, p=panel: _toggle_also_visible_when(p, e.value, save, refresh)) \
+                .props("dense").tooltip("AND a second condition in, e.g. a time gate alongside a T60 state")
+            if vw.get("also_target"):
+                with ui.row().classes("items-center gap-2 w-full"):
+                    ui.select(_options_with(sorted(tree.keys()), vw.get("also_target")),
+                              value=vw.get("also_target") or None, label="and also", with_input=True,
+                              on_change=lambda e, p=panel: _set_visible_when(p, "also_target", e.value, save, refresh)) \
+                        .props("dense").classes("min-w-[200px]").style("flex:1")
+                    ui.select(["state", "children_met"], value=vw.get("also_kind", "state"), label="kind",
+                              on_change=lambda e, p=panel: _set_visible_when(p, "also_kind", e.value, save, refresh)) \
+                        .props("dense").classes("min-w-[120px]")
+                    if vw.get("also_kind") == "children_met":
+                        ui.number(label="min met", value=(vw.get("also_params") or {}).get("min_met", 1),
+                                 precision=0, format="%d", min=1,
+                                 on_change=lambda e, p=panel: _set_also_visible_when_min_met(p, e.value, save)) \
+                            .props("dense").classes("min-w-[90px]")
 
         ui.separator()
         ui.label("Rows: multiple blocks in one panel (leave empty for the usual "
