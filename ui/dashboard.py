@@ -27,6 +27,7 @@ MUTED = "text-sm text-gray-300"
 
 OPEN_GREEN = (67, 160, 71)      # any score at or above zero
 NEAR_ZERO = (246, 241, 51)      # just below zero: bright yellow (~#f6f133)
+MID_NEGATIVE = (230, 126, 34)   # partway down: a clean orange, not muddy yellow-orange
 FAR_NEGATIVE = (107, 15, 15)    # deeply negative: dark blood red
 UNKNOWN_GREY = (130, 130, 130)  # no value to show
 SKIPPED_SLATE = (74, 85, 104)   # evaluation never reached this block
@@ -39,6 +40,13 @@ MULTI_PANEL_DARK = (31, 41, 55)   # panels with several blocks: neutral shell, c
 # negative" anyway.
 SATURATION = 1.0
 
+# Fraction of the weight range where the yellow->orange leg finishes and
+# orange->red starts. A straight two-colour yellow-to-red blend spends too
+# long looking like a washed-out yellow-orange; routing through a real
+# orange, and reaching it early, gets to a visibly "this is going bad"
+# colour well before the score is very negative.
+ORANGE_AT = 0.3
+
 
 def _rgb(score: Any) -> tuple[int, int, int]:
     if score is None or (isinstance(score, float) and math.isnan(score)):
@@ -48,7 +56,9 @@ def _rgb(score: Any) -> tuple[int, int, int]:
     # Logarithmic so the crowded region just below zero stays distinguishable
     # instead of every losing score washing out to the same red.
     weight = min(1.0, math.log1p(abs(score)) / math.log1p(SATURATION))
-    return _blend(NEAR_ZERO, FAR_NEGATIVE, weight)
+    if weight <= ORANGE_AT:
+        return _blend(NEAR_ZERO, MID_NEGATIVE, weight / ORANGE_AT)
+    return _blend(MID_NEGATIVE, FAR_NEGATIVE, (weight - ORANGE_AT) / (1 - ORANGE_AT))
 
 
 def score_colour(score: Any) -> str:
@@ -658,7 +668,7 @@ def repaint(service) -> None:
                             met += 1
                     meter.set_text(f"{met}/{len(grandchild_ids)}")
                 compact = bool(grandchild_ids) and child_id in compact_children
-                if compact:
+                if compact and child_state == "value":
                     # Same green-to-red scale a score uses, just fed the
                     # met/total fraction instead: X/X lands on the score>=0
                     # boundary, 0/X on the fully-saturated negative end.
@@ -666,6 +676,11 @@ def repaint(service) -> None:
                     box.style(f"background:{score_colour(pseudo_score)};"
                               f"color:{text_colour(pseudo_score)}")
                 else:
+                    # No real score yet (nan/skipped/waiting/unset) -- the
+                    # met/total fraction would just read as "0 met" and paint
+                    # dark red, which looks like a real bad result rather
+                    # than "nothing to show", so this keeps the same neutral
+                    # grey the normal (non-compact) view already uses.
                     box.style(f"background:{state_colour(child_state, child_value)};"
                               f"color:{state_text_colour(child_state, child_value)}")
                 label.set_visibility(not compact)
