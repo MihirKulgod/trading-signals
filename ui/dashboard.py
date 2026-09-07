@@ -569,13 +569,19 @@ def repaint(service) -> None:
             forced = LIVE["show_hidden"] and not actually_visible
             visible = actually_visible or LIVE["show_hidden"]
             border = "border:2px dashed #6b7280;" if forced else "border:2px solid transparent;"
-            # A panel showing several blocks (rows, or a block plus its
-            # children) shouldn't have its whole shell tinted by one of
-            # them -- that read as the combination's min score bleeding
-            # over everything else, drowning out each block's own colour.
-            multi = bool(record["rows"]) or bool(record["children"])
-            bg = _css(MULTI_PANEL_DARK) if multi else state_colour(state, value)
-            fg = "#e5e7eb" if multi else state_text_colour(state, value)
+            # A rows panel (e.g. T60) holds several unrelated blocks with no
+            # overall score of its own, so its shell shouldn't be tinted by
+            # any one of them. A panel with a single block (children grid or
+            # not) does have a real overall score -- just green when it's
+            # positive, the same dark shell otherwise, not the full
+            # gradient (that belongs to the children, not the parent).
+            multi = bool(record["rows"])
+            if multi:
+                bg, fg = _css(MULTI_PANEL_DARK), "#e5e7eb"
+            elif state == "value" and value >= 0:
+                bg, fg = _css(OPEN_GREEN), _on(OPEN_GREEN)
+            else:
+                bg, fg = _css(MULTI_PANEL_DARK), "#e5e7eb"
             record["card"].style(f"display:{'flex' if visible else 'none'};"
                                  f"{border}"
                                  f"background:{bg};"
