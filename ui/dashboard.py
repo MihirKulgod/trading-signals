@@ -374,11 +374,11 @@ def dashboard_section(settings_doc, strategy_doc, service, save) -> None:
     )
     with grid:
         for index, panel in enumerate(panels):
-            _panel(index, panel, panels, tree, disabled, strategy_doc, size, save, compact_children)
+            _panel(index, panel, panels, tree, disabled, strategy_doc, size, save, compact_children, service)
     repaint(service)
 
 
-def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save, compact_children) -> None:
+def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save, compact_children, service) -> None:
     block = panel.get("block") or ""
     visible_when = panel.get("visible_when")
     rows_cfg = panel.get("rows") or []
@@ -413,7 +413,7 @@ def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save, compa
                 record["score"] = ui.label("").classes("font-semibold dash-score")
                 record["note"] = ui.label("").classes("dash-note").style("opacity:0.85")
             if not panel.get("hide_children"):
-                _children(record, block, tree, compact_children, save)
+                _children(record, block, tree, compact_children, save, service)
 
     LIVE["panels"].append(record)
 
@@ -498,20 +498,23 @@ def _short_child_label(child_id: str, parent_id: str) -> str:
     return readable_id("-".join(child_parts[i:]) or child_id)
 
 
-def _toggle_compact(child_id: str, compact_children, save) -> None:
+def _toggle_compact(child_id: str, compact_children, save, service) -> None:
     """
     Flips a child between showing its score and showing just name + a
     met/total meter -- persisted so the choice survives a reload, not just
-    kept for this browser session.
+    kept for this browser session. Repaints immediately rather than waiting
+    for the next tick, or the click would sit unreflected for up to a
+    second.
     """
     if child_id in compact_children:
         compact_children.remove(child_id)
     else:
         compact_children.append(child_id)
     save()
+    repaint(service)
 
 
-def _children(record, block, tree, compact_children, save) -> None:
+def _children(record, block, tree, compact_children, save, service) -> None:
     """
     One rectangle per direct child. Children keep to a single level, but a
     child with children of its own also gets a met/total meter beneath its
@@ -536,7 +539,7 @@ def _children(record, block, tree, compact_children, save) -> None:
                 .style("flex:1 1 0;min-width:52px")
             if grandchild_ids:
                 box.classes("cursor-pointer") \
-                    .on("click", lambda cid=child_id: _toggle_compact(cid, compact_children, save))
+                    .on("click", lambda cid=child_id: _toggle_compact(cid, compact_children, save, service))
             gc_labels = []
             with box:
                 if grandchild_ids:
