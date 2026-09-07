@@ -752,15 +752,55 @@ def _wick_operand(operand):
         return operand
     return None
 
+def _rename_ids(spec: dict) -> None:
+    """Give every id in this subtree its reversed id, without touching any
+    value -- used under a time gate, whose own comparison is non-directional
+    but whose nested ids (e.g. a session_minute wrapped inside one of its
+    operands) still need to change, or a duplicated mirror collides with the
+    untouched original's matching nested id."""
+    spec["id"] = reverse_id(spec.get("id", ""))
+    for child in _condition_children(spec):
+        _rename_ids(child)
+
+def _same_ignoring_ids(a, b) -> bool:
+    """Structurally equal, ignoring id labels and (for and/or) child order --
+    AND/OR are commutative, so reordering their children changes nothing."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        a_keys, b_keys = set(a) - {"id"}, set(b) - {"id"}
+        if a_keys != b_keys:
+            return False
+        if a.get("condition") in ("and", "or") and isinstance(a.get("args"), list):
+            remaining = list(b.get("args") or [])
+            for child in a.get("args") or []:
+                match = next((r for r in remaining if _same_ignoring_ids(child, r)), None)
+                if match is None:
+                    return False
+                remaining.remove(match)
+            return all(_same_ignoring_ids(a[k], b[k]) for k in a_keys if k != "args")
+        return all(_same_ignoring_ids(a[k], b[k]) for k in a_keys)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_same_ignoring_ids(x, y) for x, y in zip(a, b))
+    return a == b
+
+def _reversal_is_noop(spec: dict, definitions: list) -> bool:
+    """True if reversing `spec` produces the same logic it already has, e.g.
+    'NOT(up) AND NOT(down)' -- reversing swaps the two branches but the AND
+    of them means the same thing either way. A ref to a definition like this
+    should keep pointing at it rather than spawn a 'duplicate' that only
+    collides with the original it's structurally identical to."""
+    candidate = copy.deepcopy(spec)
+    reverse_spec(candidate, copy.deepcopy(definitions))
+    return _same_ignoring_ids(candidate, spec)
+
 def reverse_spec(spec: dict, definitions: list) -> None:
     """Flip `spec`'s directional meaning in place (Up <-> Down). `definitions`
     is the live (mutable) definitions list, used to look up or create a
     reversed counterpart for any 'ref' encountered."""
     if is_time_gate(spec, definitions):
-        # Non-directional: the value/target stays untouched, but this node's
-        # id must still change, or a duplicated original/mirror pair collide
-        # on id once both live in the document.
-        spec["id"] = reverse_id(spec.get("id", ""))
+        # Non-directional: the value/target stays untouched, but ids still
+        # need to change throughout, or a duplicated original/mirror pair
+        # collide once both live in the document.
+        _rename_ids(spec)
         return
 
     cond_type = spec.get("condition")
@@ -768,10 +808,15 @@ def reverse_spec(spec: dict, definitions: list) -> None:
 
     if cond_type == "ref":
         target = spec["args"]["target"]
-        mirror = reverse_id(target)
         original = _find_definition_spec(definitions, target)
         if original is None:
             raise DefinitionNotFoundError(target)
+        if _reversal_is_noop(original, definitions):
+            # `target` already means the same thing under both directions, so
+            # both the original and reversed callers should share it rather
+            # than duplicate it into a copy with colliding nested ids.
+            return
+        mirror = reverse_id(target)
         existing = _find_definition_spec(definitions, mirror)
         if existing is None:
             duplicate = copy.deepcopy(original)
