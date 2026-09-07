@@ -854,6 +854,12 @@ def _remove_rule(rules, index, save) -> None:
     save()
     _notifications_section.refresh()
 
+def _confirm_delete_rule(rules, index, save) -> None:
+    from ui import dashboard
+
+    dashboard._confirm_delete("Delete this notification rule?",
+                              lambda: _remove_rule(rules, index, save))
+
 def _set_rule_field(rule, key, value, save) -> None:
     rule[key] = value
     save()
@@ -905,7 +911,8 @@ def _notifications_section(settings_doc, strategy_doc, save) -> None:
             ui.switch(value=rule.get("enabled", True),
                      on_change=lambda e, r=rule: _set_rule_field(r, "enabled", e.value, save)) \
                 .props("dense").tooltip("Enabled")
-            ui.button(icon="delete", on_click=lambda i=index: _remove_rule(rules, i, save)) \
+            ui.button(icon="delete",
+                      on_click=lambda i=index: _confirm_delete_rule(rules, i, save)) \
                 .props("flat dense color=negative")
 
 def _start_live() -> None:

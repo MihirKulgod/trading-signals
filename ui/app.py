@@ -34,6 +34,23 @@ MUTED = "text-sm text-gray-300"
 # they still read as grouped within the section around them, crimson primary.
 SUBCARD_BG = "#37455C"
 
+
+def _confirm_delete(message: str, action) -> None:
+    """A modal yes/no gate in front of a destructive action -- deleting was
+    otherwise a single accidental click with no way back."""
+    with ui.dialog() as dialog, ui.card().classes("gap-3"):
+        ui.label(message)
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+
+            def _confirmed() -> None:
+                dialog.close()
+                action()
+
+            ui.button("Delete", on_click=_confirmed).props("flat color=negative")
+    dialog.open()
+
+
 # ---------------------------------------------------------------------------
 # Editor state: the two raw documents are the single source of truth.
 # ---------------------------------------------------------------------------
@@ -126,7 +143,9 @@ def _display_tab() -> None:
                     ui.space()
                     ui.button(icon="add", on_click=lambda pl=panel: _add_panel_col(pl)) \
                         .props("flat dense").tooltip("Add column")
-                    ui.button(icon="delete", on_click=lambda i=p_idx: _remove_panel(display, i)) \
+                    ui.button(icon="delete",
+                              on_click=lambda i=p_idx: _confirm_delete(
+                                  "Delete this panel?", lambda: _remove_panel(display, i))) \
                         .props("flat dense color=negative").tooltip("Remove panel")
                 alias_opts = vocabulary.alias_names(strategy)
                 for col_name in list(panel.keys()):
@@ -142,7 +161,8 @@ def _display_tab() -> None:
                         _select("color", vocabulary.COLOR_OPTIONS, panel, col_name,
                                 with_input=True).props("dense")
                         ui.button(icon="delete",
-                                  on_click=lambda pl=panel, c=col_name: _remove_panel_col(pl, c)) \
+                                  on_click=lambda pl=panel, c=col_name: _confirm_delete(
+                                      f"Delete column '{c}'?", lambda: _remove_panel_col(pl, c))) \
                             .props("flat dense color=negative")
 
     # --- scalar / enum fields ---
@@ -239,7 +259,8 @@ def _instrument_editor(exchange: CommentedMap, idx: int, instr: CommentedMap) ->
                 .props("dense")
             ui.space()
             ui.button(icon="delete",
-                      on_click=lambda ex=exchange, i=idx: _remove_instrument(ex, i)) \
+                      on_click=lambda ex=exchange, i=idx: _confirm_delete(
+                          "Delete this instrument?", lambda: _remove_instrument(ex, i))) \
                 .props("flat dense color=negative")
         with ui.row().classes("items-center gap-2"):
             if is_spot:
@@ -362,7 +383,9 @@ def _indicator_editor(ta: CommentedSeq, idx: int, ind: CommentedMap) -> None:
                      on_change=lambda e, i=ind: i.__setitem__("alias", _parse_alias(e.value))) \
                 .classes("min-w-[220px]").props("dense")
             ui.space()
-            ui.button(icon="delete", on_click=lambda i=idx: _remove_indicator(ta, i)) \
+            ui.button(icon="delete",
+                      on_click=lambda i=idx: _confirm_delete(
+                          "Delete this indicator?", lambda: _remove_indicator(ta, i))) \
                 .props("flat dense color=negative")
         params = [k for k in ind.keys() if k not in ("kind", "alias")]
         if params:
@@ -1040,7 +1063,9 @@ def _condition_editor_body(node: CommentedMap, depth: int, on_remove=None, show_
                 ui.button(icon="content_cut",
                           on_click=lambda n=node, cb=on_remove: _cut_condition(n, cb)) \
                     .props("flat dense").tooltip("Cut")
-                ui.button(icon="delete", on_click=lambda cb=on_remove: cb()) \
+                ui.button(icon="delete",
+                          on_click=lambda n=node, cb=on_remove: _confirm_delete(
+                              f"Delete '{n.get('id')}' and everything inside it?", cb)) \
                     .props("flat dense color=negative")
 
         if cond_type in description.ATOMIC_TYPES:

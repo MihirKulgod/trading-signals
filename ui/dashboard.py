@@ -395,7 +395,9 @@ def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save) -> No
                       on_click=lambda i=index, p=panel: _edit(i, p, panels, tree, strategy_doc, save)) \
                 .props("flat dense size=sm").style("color:inherit")
             ui.button(icon="close",
-                      on_click=lambda i=index: _remove_panel(panels, i, save)) \
+                      on_click=lambda i=index, p=panel: _confirm_delete(
+                          f"Delete panel '{p.get('name') or '(unnamed)'}'?",
+                          lambda: _remove_panel(panels, i, save))) \
                 .props("flat dense size=sm").style("color:inherit")
 
         if rows_cfg:
@@ -702,6 +704,22 @@ def _reset_panels(panels, strategy_doc, save) -> None:
     dashboard_section.refresh()
 
 
+def _confirm_delete(message: str, action) -> None:
+    """A modal yes/no gate in front of a destructive action -- deleting was
+    otherwise a single accidental click with no way back."""
+    with ui.dialog() as dialog, ui.card().classes("gap-3"):
+        ui.label(message)
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+
+            def _confirmed() -> None:
+                dialog.close()
+                action()
+
+            ui.button("Delete", on_click=_confirmed).props("flat color=negative")
+    dialog.open()
+
+
 def _remove_panel(panels, index, save) -> None:
     del panels[index]
     SHOW_ALL.clear()               # indices shift, so stale per-index state can't survive
@@ -931,14 +949,17 @@ def _editor(index, panel, panels, tree, strategy_doc, save, dialog, refresh) -> 
                           on_change=lambda e, r=row: _set_row_field(r, "target", e.value, save)) \
                     .props("dense").classes("min-w-[160px]").style("flex:1")
                 ui.button(icon="delete",
-                          on_click=lambda p=panel, i=r_idx: _remove_row(p, i, save, refresh)) \
+                          on_click=lambda p=panel, i=r_idx: _confirm_delete(
+                              "Delete this row?", lambda: _remove_row(p, i, save, refresh))) \
                     .props("flat dense color=negative")
         ui.button(icon="add", on_click=lambda p=panel: _add_row(p, save, refresh)) \
             .props("flat dense").tooltip("Add row")
 
         with ui.row().classes("items-center gap-1 w-full justify-end"):
             ui.button(icon="delete",
-                      on_click=lambda i=index: _remove_panel_and_close(panels, i, save, dialog)) \
+                      on_click=lambda i=index, p=panel: _confirm_delete(
+                          f"Delete panel '{p.get('name') or '(unnamed)'}'?",
+                          lambda: _remove_panel_and_close(panels, i, save, dialog))) \
                 .props("flat dense color=negative")
             ui.button("Done", icon="check", on_click=lambda: _finish_edit(dialog)) \
                 .props("flat dense")
