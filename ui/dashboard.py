@@ -268,9 +268,9 @@ PANEL_CSS = f"""
    more of them wrap into a row (flex: 1 1 0), so cqw against the box
    itself (not the panel) is what makes text respond to child count. */
 .{PANEL_CLASS_CHILD} {{ container-type: inline-size; container-name: dash-child; }}
-.dash-child-label {{ font-size: clamp(0.45rem, 18cqw, 0.9rem); line-height: 1.1; }}
-.dash-child-value {{ font-size: clamp(0.5rem, 18cqw, 1.15rem); line-height: 1.2; }}
-.dash-child-meter  {{ font-size: clamp(0.45rem, 16cqw, 0.95rem); line-height: 1.1; }}
+.dash-child-label {{ font-size: clamp(0.5rem, 20cqw, 1.05rem); line-height: 1.15; }}
+.dash-child-value {{ font-size: clamp(0.55rem, 20cqw, 1.3rem); line-height: 1.25; }}
+.dash-child-meter  {{ font-size: clamp(0.5rem, 18cqw, 1.1rem); line-height: 1.15; }}
 """
 
 # Element handles kept from the last build, so a tick can repaint values in
@@ -528,8 +528,8 @@ def _children(record, block, tree, compact_children, save) -> None:
     child_ids = _visible_children(tree, block) if block else []
     if not child_ids:
         return
-    with ui.row().classes("w-full gap-1 flex-wrap content-start") \
-            .style("flex:1;min-height:0;overflow:hidden"):
+    with ui.row().classes("w-full gap-1 flex-wrap content-stretch") \
+            .style("flex:1;min-height:0;overflow:hidden;align-items:stretch"):
         for child_id in child_ids:
             grandchild_ids = _visible_children(tree, child_id)
             box = ui.column().classes(f"{PANEL_CLASS_CHILD} items-center justify-center rounded p-1 gap-0") \
