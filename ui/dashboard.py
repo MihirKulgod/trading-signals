@@ -16,7 +16,7 @@ from typing import Any
 
 from nicegui import ui
 
-from description import describe_block, readable_id
+from description import readable_id
 from notifications import is_met
 
 MUTED = "text-sm text-gray-300"
@@ -405,7 +405,7 @@ def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save) -> No
                 record["score"] = ui.label("").classes("font-semibold dash-score")
                 record["note"] = ui.label("").classes("dash-note").style("opacity:0.85")
             if not panel.get("hide_children"):
-                _children(record, block, tree, strategy_doc)
+                _children(record, block, tree)
 
     LIVE["panels"].append(record)
 
@@ -490,25 +490,15 @@ def _short_child_label(child_id: str, parent_id: str) -> str:
     return readable_id("-".join(child_parts[i:]) or child_id)
 
 
-def _child_description(child_id: str, strategy_doc) -> str:
-    """
-    Markdown for exactly what this child checks -- the same rendering the
-    strategy doc uses, but scoped to just this one node, not its siblings or
-    the rest of the panel, so the tooltip is only ever as big as that child's
-    own logic actually needs.
-    """
-    from condition import find_condition_spec
-
-    spec = find_condition_spec(strategy_doc, child_id)
-    return describe_block(spec, strategy_doc) if spec is not None else f"`{child_id}`"
-
-
-def _children(record, block, tree, strategy_doc) -> None:
+def _children(record, block, tree) -> None:
     """
     One rectangle per direct child. Children keep to a single level, but a
     child with children of its own also gets a met/total meter beneath its
     score, e.g. '3/6', for how many of those grandchildren currently score
-    positive.
+    positive -- and a small tooltip listing each grandchild's own current
+    score, so the meter's count can be checked without opening the editor.
+    Just names and numbers, no descriptions, and short enough to never need
+    to scroll inside the tooltip itself.
     """
     child_ids = _visible_children(tree, block) if block else []
     if not child_ids:
@@ -519,16 +509,21 @@ def _children(record, block, tree, strategy_doc) -> None:
             grandchild_ids = _visible_children(tree, child_id)
             box = ui.column().classes(f"{PANEL_CLASS_CHILD} items-center justify-center rounded p-1 gap-0") \
                 .style("flex:1 1 0;min-width:52px")
+            gc_labels = []
             with box:
-                with ui.tooltip().style("max-width:300px"):
-                    ui.markdown(_child_description(child_id, strategy_doc)).classes("text-xs")
+                if grandchild_ids:
+                    with ui.tooltip().style("max-width:240px;overflow:visible"):
+                        with ui.column().classes("gap-0"):
+                            for gid in grandchild_ids:
+                                with ui.row().classes("items-center justify-between gap-2 no-wrap w-full"):
+                                    ui.label(_short_child_label(gid, child_id)).classes("text-xs")
+                                    gc_labels.append(ui.label("").classes("text-xs font-semibold"))
                 ui.label(_short_child_label(child_id, block)).classes("dash-child-label truncate w-full text-center")
                 value = ui.label("").classes("dash-child-value font-semibold")
                 meter = None
                 if grandchild_ids:
-                    meter = ui.label("").classes("dash-child-meter").style("opacity:0.85") \
-                        .tooltip(f"met / total of {child_id}'s own children")
-            record["children"].append((child_id, box, value, meter, grandchild_ids))
+                    meter = ui.label("").classes("dash-child-meter").style("opacity:0.85")
+            record["children"].append((child_id, box, value, meter, grandchild_ids, gc_labels))
 
 
 def _panel_visible(visible_when, scores, tree, engine_ran) -> bool:
@@ -619,16 +614,20 @@ def repaint(service) -> None:
                 record["note"].set_text(
                     "disabled" if record["disabled"]
                     else ("" if state == "value" else STATE_LABEL[state]))
-            for child_id, box, label, meter, grandchild_ids in record["children"]:
+            for child_id, box, label, meter, grandchild_ids, gc_labels in record["children"]:
                 child_state, child_value = block_state(child_id, scores, engine_ran)
                 box.style(f"background:{state_colour(child_state, child_value)};"
                           f"color:{state_text_colour(child_state, child_value)}")
                 label.set_text("\u00b7" if child_state == "skipped"
                                else format_score(child_value))
                 if meter is not None:
-                    met = sum(1 for gid in grandchild_ids
-                              if block_state(gid, scores, engine_ran)[0] == "value"
-                              and block_state(gid, scores, engine_ran)[1] >= 0)
+                    met = 0
+                    for gid, gc_label in zip(grandchild_ids, gc_labels):
+                        gc_state, gc_value = block_state(gid, scores, engine_ran)
+                        gc_label.set_text("\u00b7" if gc_state == "skipped"
+                                          else format_score(gc_value))
+                        if gc_state == "value" and gc_value >= 0:
+                            met += 1
                     meter.set_text(f"{met}/{len(grandchild_ids)}")
             for target, value_el, meter, child_ids in record["rows"]:
                 row_state, row_value = block_state(target, scores, engine_ran)
