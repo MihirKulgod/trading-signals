@@ -237,13 +237,22 @@ def _remove_panel_col(panel: CommentedMap, col_name: str) -> None:
 def _general_tab() -> None:
     general = DOCS["strategy"].setdefault("general", CommentedMap())
     exchanges = general.setdefault("exchanges", CommentedSeq())
-    for exchange in exchanges:
+    with ui.row().classes("items-center w-full"):
+        ui.space()
+        ui.button(icon="add", on_click=lambda: _add_exchange(exchanges)) \
+            .props("flat dense").tooltip("Add exchange")
+    for e_idx, exchange in enumerate(exchanges):
         with ui.card().classes("w-full"):
             with ui.row().classes("items-center gap-2 w-full"):
                 _text("exchange", exchange, "exchange").props("dense")
                 ui.space()
                 ui.button(icon="add", on_click=lambda ex=exchange: _add_instrument(ex)) \
                     .props("flat dense").tooltip("Add instrument")
+                ui.button(icon="delete",
+                          on_click=lambda i=e_idx, ex=exchange: _confirm_delete(
+                              f"Delete exchange '{ex.get('exchange') or '(unnamed)'}' "
+                              "and all its instruments?", lambda: _remove_exchange(exchanges, i))) \
+                    .props("flat dense color=negative").tooltip("Remove exchange")
             for i_idx, instr in enumerate(exchange.get("instruments", [])):
                 _instrument_editor(exchange, i_idx, instr)
 
@@ -337,6 +346,22 @@ def _set_instrument_kind(instr: CommentedMap, kind: str) -> None:
         instr.setdefault("name", "")
         instr.setdefault("instrument_type", "FUT")
         instr.setdefault("expiry_rule", "near_month")
+    _general_tab.refresh()
+
+
+def _add_exchange(exchanges: CommentedSeq) -> None:
+    """A blank strategy.yaml starts with no exchanges at all, which meant
+    'add instrument' had nowhere to attach to -- this is what a fresh
+    install needs to be able to add its first one."""
+    exchanges.append(_new_map([
+        ("exchange", "NSE"),
+        ("instruments", CommentedSeq()),
+    ]))
+    _general_tab.refresh()
+
+
+def _remove_exchange(exchanges: CommentedSeq, idx: int) -> None:
+    del exchanges[idx]
     _general_tab.refresh()
 
 
