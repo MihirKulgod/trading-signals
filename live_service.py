@@ -22,7 +22,7 @@ from kiteconnect import KiteConnect
 import app_paths
 from app_logging import get_logger
 from condition import disabled_condition_ids
-from data_processing import generate_base
+from data_processing import generate_base_window
 from data_retrieval import (InsufficientHistoryError, get_historical,
                             historical_csv_path, parse_instruments)
 from live_candles import LiveCandleBuilder
@@ -156,7 +156,12 @@ class LiveService:
             download_data=True, wipe_file=False, require_coverage=False,
         )
         self._check_sessions(instruments_data)
-        generate_base(config, instruments_data)
+        # Not generate_base: its full developing-history reconstruction is
+        # for replaying a backtest minute by minute. The very first recompute
+        # cycle below calls this same windowed/latest-only builder anyway and
+        # discards whatever generate_base produced, so building it here was
+        # pure wasted startup time.
+        generate_base_window(config, instruments_data, self.window_days)
 
         builder = LiveCandleBuilder(instruments_data, token_to_id, csv_paths)
         evaluator = LiveEvaluator(config, instruments_data, self.window_days)
