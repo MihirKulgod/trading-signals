@@ -28,19 +28,18 @@ class Condition(ABC):
         raise NotImplementedError
 
     def __call__(self, ctx: "MarketContext") -> float:
-        key = (id(self), ctx.time_offset)
-        if key not in ctx.memo:
-            # Remember whether evaluating this subtree reached an earlier
-            # session, so a memoised hit reports it too instead of looking
-            # same-day to the enclosing window.
-            outer, ctx.crossed_day = ctx.crossed_day, False
-            value = self.evaluate(ctx)
-            ctx.memo[key] = (value, ctx.crossed_day)
-            ctx.crossed_day = outer or ctx.crossed_day
-        result, crossed = ctx.memo[key]
-        ctx.crossed_day = ctx.crossed_day or crossed
-        ctx.trace[self.id] = result
-        return result
+        # Deliberately no memoisation: a node shared between a direct
+        # reference and a windowed one (evaluated at several time_offsets)
+        # used to have later, stale offsets silently skip re-evaluating it
+        # when an ancestor happened to already be cached, leaving its trace
+        # -- and the dashboard's display of it -- stuck on a lookback candle
+        # instead of the current one. Every evaluation has seconds to spare,
+        # so always recomputing is simpler than caching correctly.
+        outer, ctx.crossed_day = ctx.crossed_day, False
+        value = self.evaluate(ctx)
+        ctx.crossed_day = outer or ctx.crossed_day
+        ctx.trace[self.id] = value
+        return value
 
     def is_fulfilled(self, ctx: "MarketContext", threshold: float = 0.0) -> bool:
         return self.evaluate(ctx) >= threshold
@@ -102,7 +101,6 @@ class MarketContext:
     def __init__(self, instruments_data: list[dict], current_time: pd.Timestamp):
         self.instruments_data, self.current_time = instruments_data, current_time
         self.trace: dict[str, float] = {}
-        self.memo: dict[tuple, tuple] = {}
         self.time_offset = 0
         # Set by get() when a lookup lands on an earlier session, so a window
         # restricted to same_day can drop that offset.
