@@ -311,7 +311,43 @@ def dashboard_config(settings_doc) -> Any:
     node.setdefault("size", 1.0)
     node.setdefault("panels", CommentedSeq())
     node.setdefault("compact_children", CommentedSeq())
+    _migrate_visible_when(node["panels"])
     return node
+
+
+def _migrate_visible_when(panels) -> None:
+    """
+    Old shape: a single target/kind/params plus an optional second
+    also_target/also_kind/also_params clause ANDed in. New shape: an
+    arbitrary-length ``conditions`` list, all ANDed -- rewrites any panel
+    still on the old shape once, in place, so the next save() persists the
+    new form.
+    """
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+    for panel in panels:
+        vw = panel.get("visible_when")
+        if not isinstance(vw, dict) or "conditions" in vw:
+            continue
+        clauses = CommentedSeq()
+        target = vw.get("target") or ""
+        if target:
+            clause = CommentedMap([("target", target), ("kind", vw.get("kind", "state"))])
+            params = vw.get("params")
+            if params:
+                clause["params"] = params
+            clauses.append(clause)
+        also_target = vw.get("also_target") or ""
+        if also_target:
+            clause = CommentedMap([("target", also_target), ("kind", vw.get("also_kind", "state"))])
+            also_params = vw.get("also_params")
+            if also_params:
+                clause["params"] = also_params
+            clauses.append(clause)
+        if clauses:
+            panel["visible_when"] = CommentedMap([("conditions", clauses)])
+        else:
+            panel.pop("visible_when", None)   # old dict had no usable target at all
 
 
 def _panels(settings_doc) -> Any:
@@ -455,12 +491,10 @@ def _invalid_targets(panel, tree) -> list[str]:
             bad.append(target)
     vw = panel.get("visible_when")
     if isinstance(vw, dict):
-        target = vw.get("target") or ""
-        if target and target not in tree:
-            bad.append(target)
-        also_target = vw.get("also_target") or ""
-        if also_target and also_target not in tree:
-            bad.append(also_target)
+        for clause in vw.get("conditions") or []:
+            target = clause.get("target") or ""
+            if target and target not in tree:
+                bad.append(target)
     return bad
 
 
@@ -579,29 +613,26 @@ def _children(record, block, tree, compact_children, save, service) -> None:
 def _panel_visible(visible_when, scores, tree, engine_ran) -> bool:
     """
     A panel with no visible_when is always shown. One that has it stays
-    hidden until the engine has actually produced a value for its target --
-    showing a gated panel off of nothing would be misleading, not helpful.
-
-    ``also_target`` is an optional second condition ANDed with the first --
-    e.g. a combination that's only live once its T60 regime AND the
-    post-open time gate both hold, which a single target can't express.
+    hidden until the engine has actually produced a value for every clause's
+    target -- showing a gated panel off of nothing would be misleading, not
+    helpful. Every clause must be met (AND), so e.g. a combination that's
+    only live once its T60 regime AND the post-open time gate both hold can
+    list both instead of being limited to a single condition.
     """
     if visible_when is None:
         return True
     if not engine_ran:
         return False
-    target = visible_when.get("target")
-    if not target:
+    conditions = visible_when.get("conditions") or []
+    if not conditions:
         return False
-    kind = visible_when.get("kind", "state")
-    params = visible_when.get("params") or {}
-    if not is_met(kind, target, scores, tree, params):
-        return False
-    also_target = visible_when.get("also_target")
-    if also_target:
-        also_kind = visible_when.get("also_kind", "state")
-        also_params = visible_when.get("also_params") or {}
-        if not is_met(also_kind, also_target, scores, tree, also_params):
+    for clause in conditions:
+        target = clause.get("target") or ""
+        if not target:
+            return False
+        kind = clause.get("kind", "state")
+        params = clause.get("params") or {}
+        if not is_met(kind, target, scores, tree, params):
             return False
     return True
 
@@ -872,61 +903,65 @@ def _set_max_visible(panel, value, save, field) -> None:
 def _toggle_visible_when(panel, value, save, refresh) -> None:
     """Turning this off removes the key entirely, matching 'no visible_when
     means always shown' -- the field structurally changes, so this refreshes."""
-    from ruamel.yaml.comments import CommentedMap
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
     if value:
-        panel["visible_when"] = CommentedMap([("target", ""), ("kind", "state")])
+        panel["visible_when"] = CommentedMap(
+            [("conditions", CommentedSeq([CommentedMap([("target", ""), ("kind", "state")])]))])
     else:
         panel.pop("visible_when", None)
     save()
     refresh()
 
 
-def _set_visible_when(panel, key, value, save, refresh) -> None:
-    vw = panel.get("visible_when")
-    if not isinstance(vw, dict):
-        return
-    vw[key] = value
-    save()
-    if key == "kind":
-        refresh()   # min-met field appears only for children_met
-
-
-def _set_visible_when_min_met(panel, value, save) -> None:
-    from ruamel.yaml.comments import CommentedMap
+def _add_visibility_clause(panel, save, refresh) -> None:
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
     vw = panel.get("visible_when")
     if not isinstance(vw, dict):
         return
-    n = int(value) if value not in (None, "") else 1
-    vw.setdefault("params", CommentedMap())["min_met"] = max(1, n)
-    save()
-
-
-def _toggle_also_visible_when(panel, value, save, refresh) -> None:
-    """Turning this off drops also_target entirely, matching 'no also_target
-    means single-condition visibility' -- the field structurally changes."""
-    vw = panel.get("visible_when")
-    if not isinstance(vw, dict):
-        return
-    if value:
-        vw["also_target"], vw["also_kind"] = "", "state"
-    else:
-        vw.pop("also_target", None)
-        vw.pop("also_kind", None)
-        vw.pop("also_params", None)
+    vw.setdefault("conditions", CommentedSeq()).append(CommentedMap([("target", ""), ("kind", "state")]))
     save()
     refresh()
 
 
-def _set_also_visible_when_min_met(panel, value, save) -> None:
+def _remove_visibility_clause(panel, index, save, refresh) -> None:
+    vw = panel.get("visible_when")
+    if not isinstance(vw, dict):
+        return
+    conditions = vw.get("conditions") or []
+    if 0 <= index < len(conditions):
+        del conditions[index]
+    if not conditions:
+        panel.pop("visible_when", None)   # no conditions left -- back to always-visible
+    save()
+    refresh()
+
+
+def _set_visibility_clause(panel, index, key, value, save, refresh=None) -> None:
+    vw = panel.get("visible_when")
+    if not isinstance(vw, dict):
+        return
+    conditions = vw.get("conditions") or []
+    if not (0 <= index < len(conditions)):
+        return
+    conditions[index][key] = value
+    save()
+    if refresh is not None and key == "kind":
+        refresh()   # min-met field appears only for children_met
+
+
+def _set_visibility_clause_min_met(panel, index, value, save) -> None:
     from ruamel.yaml.comments import CommentedMap
 
     vw = panel.get("visible_when")
     if not isinstance(vw, dict):
         return
+    conditions = vw.get("conditions") or []
+    if not (0 <= index < len(conditions)):
+        return
     n = int(value) if value not in (None, "") else 1
-    vw.setdefault("also_params", CommentedMap())["min_met"] = max(1, n)
+    conditions[index].setdefault("params", CommentedMap())["min_met"] = max(1, n)
     save()
 
 
@@ -999,38 +1034,34 @@ def _editor(index, panel, panels, tree, strategy_doc, save, dialog, refresh) -> 
         max_field.style(f"opacity:{0.5 if max_visible < 0 else 1}")
         ui.switch("conditionally visible", value=isinstance(vw, dict),
                   on_change=lambda e, p=panel: _toggle_visible_when(p, e.value, save, refresh)) \
-            .props("dense").tooltip("Only show this panel while another block is met")
+            .props("dense").tooltip("Only show this panel while every condition below is met")
         if isinstance(vw, dict):
-            with ui.row().classes("items-center gap-2 w-full"):
-                ui.select(_options_with(sorted(tree.keys()), vw.get("target")), value=vw.get("target") or None,
-                          label="visible when", with_input=True,
-                          on_change=lambda e, p=panel: _set_visible_when(p, "target", e.value, save, refresh)) \
-                    .props("dense").classes("min-w-[200px]").style("flex:1")
-                ui.select(["state", "children_met"], value=vw.get("kind", "state"), label="kind",
-                          on_change=lambda e, p=panel: _set_visible_when(p, "kind", e.value, save, refresh)) \
-                    .props("dense").classes("min-w-[120px]")
-                if vw.get("kind") == "children_met":
-                    ui.number(label="min met", value=(vw.get("params") or {}).get("min_met", 1),
-                             precision=0, format="%d", min=1,
-                             on_change=lambda e, p=panel: _set_visible_when_min_met(p, e.value, save)) \
-                        .props("dense").classes("min-w-[90px]")
-            ui.switch("also require", value=bool(vw.get("also_target")),
-                      on_change=lambda e, p=panel: _toggle_also_visible_when(p, e.value, save, refresh)) \
-                .props("dense").tooltip("AND a second condition in, e.g. a time gate alongside a T60 state")
-            if vw.get("also_target"):
+            conditions = vw.get("conditions") or []
+            for c_idx, clause in enumerate(conditions):
                 with ui.row().classes("items-center gap-2 w-full"):
-                    ui.select(_options_with(sorted(tree.keys()), vw.get("also_target")),
-                              value=vw.get("also_target") or None, label="and also", with_input=True,
-                              on_change=lambda e, p=panel: _set_visible_when(p, "also_target", e.value, save, refresh)) \
-                        .props("dense").classes("min-w-[200px]").style("flex:1")
-                    ui.select(["state", "children_met"], value=vw.get("also_kind", "state"), label="kind",
-                              on_change=lambda e, p=panel: _set_visible_when(p, "also_kind", e.value, save, refresh)) \
-                        .props("dense").classes("min-w-[120px]")
-                    if vw.get("also_kind") == "children_met":
-                        ui.number(label="min met", value=(vw.get("also_params") or {}).get("min_met", 1),
+                    ui.select(_options_with(sorted(tree.keys()), clause.get("target")),
+                              value=clause.get("target") or None,
+                              label="visible when" if c_idx == 0 else "and also", with_input=True,
+                              on_change=lambda e, p=panel, i=c_idx:
+                                  _set_visibility_clause(p, i, "target", e.value, save)) \
+                        .props("dense").classes("min-w-[160px]").style("flex:1")
+                    ui.select(["state", "children_met"], value=clause.get("kind", "state"), label="kind",
+                              on_change=lambda e, p=panel, i=c_idx:
+                                  _set_visibility_clause(p, i, "kind", e.value, save, refresh)) \
+                        .props("dense").classes("min-w-[110px]")
+                    if clause.get("kind") == "children_met":
+                        ui.number(label="min met", value=(clause.get("params") or {}).get("min_met", 1),
                                  precision=0, format="%d", min=1,
-                                 on_change=lambda e, p=panel: _set_also_visible_when_min_met(p, e.value, save)) \
-                            .props("dense").classes("min-w-[90px]")
+                                 on_change=lambda e, p=panel, i=c_idx:
+                                     _set_visibility_clause_min_met(p, i, e.value, save)) \
+                            .props("dense").classes("min-w-[80px]")
+                    ui.button(icon="delete",
+                              on_click=lambda p=panel, i=c_idx: _remove_visibility_clause(p, i, save, refresh)) \
+                        .props("flat dense round").tooltip("Remove this condition")
+            ui.button("add condition", icon="add",
+                      on_click=lambda p=panel: _add_visibility_clause(p, save, refresh)) \
+                .props("flat dense") \
+                .tooltip("AND another condition in -- every one must be met for the panel to show")
 
         ui.separator()
         ui.label("Rows: multiple blocks in one panel (leave empty for the usual "

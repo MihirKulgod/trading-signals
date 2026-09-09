@@ -567,25 +567,29 @@ class Backtest(BaseModel):
     visualize: bool = False
 
 
-class VisibilityCondition(BaseModel):
-    """
-    Gates a dashboard panel: shown only while this evaluates true. Same shape
-    as a notification rule's trigger minus edge -- this is read continuously
-    every tick, not fired once on a transition.
-
-    ``also_*`` is an optional second condition ANDed with the first -- e.g. a
-    combination that's only live once its T60 regime AND the post-open time
-    gate both hold, which a single target can't express on its own.
-    """
+class VisibilityClause(BaseModel):
+    """One ANDed term of a VisibilityCondition. Same shape as a notification
+    rule's trigger minus edge -- this is read continuously every tick, not
+    fired once on a transition."""
 
     model_config = ConfigDict(extra="forbid")
 
     target: str
     kind: Literal["state", "children_met"] = "state"
     params: dict[str, Any] = Field(default_factory=dict)
-    also_target: str = ""
-    also_kind: Literal["state", "children_met"] = "state"
-    also_params: dict[str, Any] = Field(default_factory=dict)
+
+
+class VisibilityCondition(BaseModel):
+    """
+    Gates a dashboard panel: shown only while every clause in ``conditions``
+    evaluates true -- e.g. a combination that's only live once its T60
+    regime AND the post-open time gate both hold, which a single clause
+    can't express on its own.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    conditions: list[VisibilityClause] = []
 
 
 class PanelRow(BaseModel):

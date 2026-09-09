@@ -79,8 +79,11 @@ TAB_DOC = {
 
 
 def _load_docs() -> None:
+    from ui import dashboard
+
     DOCS["settings"] = persistence.load_document(persistence.SETTINGS_PATH)
     DOCS["strategy"] = persistence.load_document(persistence.STRATEGY_PATH)
+    dashboard.dashboard_config(DOCS["settings"])   # migrates visible_when before _banners() validates it
 
 
 # ---------------------------------------------------------------------------
