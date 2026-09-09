@@ -613,6 +613,7 @@ class DashboardPanel(BaseModel):
     visible_when: Optional[VisibilityCondition] = None
     rows: list[PanelRow] = []
     hide_children: bool = False
+    max_visible_seconds: float = -1.0
 
 
 class Dashboard(BaseModel):

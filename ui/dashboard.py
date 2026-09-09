@@ -236,6 +236,11 @@ PANEL_HEIGHT = 186
 MIN_SIZE, MAX_SIZE = 0.6, 1.4
 HANDLE = "dash-handle"
 SHOW_ALL: set[int] = set()   # panels whose picker is showing every block
+# Wall-clock time each panel's signal last turned on (score >= 0), keyed by
+# id(panel) so it survives dashboard_section() rebuilds -- panel objects
+# themselves (ruamel CommentedMap entries from settings_doc) stay the same
+# across a rebuild, only the LIVE["panels"] records get recreated.
+_ONSET_TS: dict[int, float] = {}
 
 GHOST_CLASS = "dash-ghost"
 # repaint() sets background/color/opacity as inline styles, which beat a
@@ -394,8 +399,11 @@ def _panel(index, panel, panels, tree, disabled, strategy_doc, size, save, compa
     visible_when = panel.get("visible_when")
     rows_cfg = panel.get("rows") or []
     card = ui.card().classes(f"p-2 gap-1 {PANEL_CLASS}").style(panel_style(size))
+    max_visible = panel.get("max_visible_seconds")
     record = {"block": block, "card": card, "disabled": block in disabled,
               "visible_when": visible_when if isinstance(visible_when, dict) else None,
+              "max_visible_seconds": -1.0 if max_visible is None else float(max_visible),
+              "onset_key": id(panel),
               "score": None, "note": None, "children": [], "rows": []}
 
     with card:
@@ -625,12 +633,26 @@ def repaint(service) -> None:
     engine_ran = getattr(service, "last_run", None) is not None
     tree = LIVE.get("tree") or {}
     compact_children = LIVE.get("compact_children") or []
+    now = time.time()
+    live_keys = {record["onset_key"] for record in LIVE["panels"]}
+    for key in list(_ONSET_TS):
+        if key not in live_keys:
+            _ONSET_TS.pop(key, None)   # panel deleted, or id() reused after GC
     try:
         if LIVE["ring"] is not None:
             _paint_countdown(service)
         for record in LIVE["panels"]:
             state, value = block_state(record["block"], scores, engine_ran)
-            actually_visible = _panel_visible(record["visible_when"], scores, tree, engine_ran)
+            onset_key = record["onset_key"]
+            max_secs = record["max_visible_seconds"]
+            if state == "value" and value >= 0:
+                _ONSET_TS.setdefault(onset_key, now)
+            else:
+                _ONSET_TS.pop(onset_key, None)   # signal off -- resets for next onset
+            maxed_out = (max_secs >= 0 and onset_key in _ONSET_TS
+                        and now - _ONSET_TS[onset_key] > max_secs)
+            actually_visible = (_panel_visible(record["visible_when"], scores, tree, engine_ran)
+                               and not maxed_out)
             forced = LIVE["show_hidden"] and not actually_visible
             visible = actually_visible or LIVE["show_hidden"]
             border = "border:2px dashed #6b7280;" if forced else "border:2px solid transparent;"
@@ -838,6 +860,15 @@ def _toggle_hide_children(panel, value, save) -> None:
     save()
 
 
+def _set_max_visible(panel, value, save, field) -> None:
+    """Negative means never force-hide -- always present, just dimmed rather
+    than a separate toggle, since 0 is itself a meaningful (if extreme) value."""
+    seconds = float(value) if value not in (None, "") else -1.0
+    panel["max_visible_seconds"] = seconds
+    save()
+    field.style(f"opacity:{0.5 if seconds < 0 else 1}")
+
+
 def _toggle_visible_when(panel, value, save, refresh) -> None:
     """Turning this off removes the key entirely, matching 'no visible_when
     means always shown' -- the field structurally changes, so this refreshes."""
@@ -958,6 +989,14 @@ def _editor(index, panel, panels, tree, strategy_doc, save, dialog, refresh) -> 
         ui.switch("hide children", value=bool(panel.get("hide_children")),
                   on_change=lambda e, p=panel: _toggle_hide_children(p, e.value, save)) \
             .props("dense").tooltip("Show just the score, without a rectangle per child")
+        max_visible = panel.get("max_visible_seconds")
+        max_visible = -1.0 if max_visible is None else float(max_visible)
+        max_field = ui.number(label="max visible (s)", value=max_visible, precision=0,
+                              on_change=lambda e: _set_max_visible(panel, e.value, save, max_field)) \
+            .props("dense").classes("w-full") \
+            .tooltip("Force-hide this panel once its signal has stayed on this long; "
+                     "negative = never (it reappears once the signal goes negative again)")
+        max_field.style(f"opacity:{0.5 if max_visible < 0 else 1}")
         ui.switch("conditionally visible", value=isinstance(vw, dict),
                   on_change=lambda e, p=panel: _toggle_visible_when(p, e.value, save, refresh)) \
             .props("dense").tooltip("Only show this panel while another block is met")
