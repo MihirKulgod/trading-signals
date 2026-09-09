@@ -22,7 +22,6 @@ from nicegui import ui
 from pydantic import ValidationError
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
-import app_paths
 import condition
 import description
 import secrets_store
@@ -644,15 +643,11 @@ def _show_description(node: CommentedMap) -> None:
 
 
 def _export_description() -> None:
-    """Write the whole strategy out as Markdown, definitions first."""
-    path = app_paths.output_dir() / "strategy_description.md"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(description.describe_strategy(DOCS["strategy"]), encoding="utf-8")
-    except OSError as error:
-        ui.notify(f"Could not write {path}: {error}", type="negative", timeout=8000)
-        return
-    ui.notify(f"Exported to {path}")
+    """The whole strategy as Markdown, definitions first -- sent as a browser
+    download (same as the settings/strategy exports) so the user picks where
+    it lands instead of it landing in a predefined output folder."""
+    text = description.describe_strategy(DOCS["strategy"])
+    ui.download(text.encode("utf-8"), filename="strategy_description.md", media_type="text/markdown")
 
 
 def _reverse_condition(node: CommentedMap) -> None:
