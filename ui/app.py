@@ -642,12 +642,38 @@ def _show_description(node: CommentedMap) -> None:
     dialog.open()
 
 
-def _export_description() -> None:
-    """The whole strategy as Markdown, definitions first -- sent as a browser
-    download (same as the settings/strategy exports) so the user picks where
-    it lands instead of it landing in a predefined output folder."""
+async def _save_bytes(content: bytes, filename: str, media_type: str = "") -> None:
+    """
+    In a browser tab, ui.download's click-a-hidden-<a> trick works fine and
+    lets the browser's own save dialog (or downloads folder) handle it. In
+    the frozen native window (Windows build, ui.run(native=True) -> pywebview
+    + WebView2), that same trick silently does nothing -- WebView2 doesn't
+    treat it as a real download inside an embedded, chromeless window. So
+    when running native, use pywebview's own save-file dialog and write the
+    bytes directly instead, which has full filesystem access either way.
+    """
+    from nicegui import app
+
+    main_window = app.native.main_window
+    if main_window is None:
+        ui.download(content, filename=filename, media_type=media_type)
+        return
+
+    import webview
+
+    dialog_type = webview.FileDialog.SAVE if hasattr(webview, "FileDialog") else webview.SAVE_DIALOG
+    result = await main_window.create_file_dialog(dialog_type, save_filename=filename)
+    if not result:
+        return
+    path = Path(result[0] if isinstance(result, (tuple, list)) else result)
+    path.write_bytes(content)
+    ui.notify(f"Saved {path.name}")
+
+
+async def _export_description() -> None:
+    """The whole strategy as Markdown, definitions first."""
     text = description.describe_strategy(DOCS["strategy"])
-    ui.download(text.encode("utf-8"), filename="strategy_description.md", media_type="text/markdown")
+    await _save_bytes(text.encode("utf-8"), filename="strategy_description.md", media_type="text/markdown")
 
 
 def _reverse_condition(node: CommentedMap) -> None:
@@ -1236,8 +1262,8 @@ def _reload_docs() -> None:
     ui.notify("Reloaded from disk — unsaved edits discarded", type="warning")
 
 
-def _export_document(doc_key: str) -> None:
-    ui.download(PATHS[doc_key], filename=PATHS[doc_key].name)
+async def _export_document(doc_key: str) -> None:
+    await _save_bytes(PATHS[doc_key].read_bytes(), filename=PATHS[doc_key].name)
 
 
 async def _import_document(doc_key: str, event) -> None:
