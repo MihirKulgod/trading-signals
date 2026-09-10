@@ -33,7 +33,7 @@ from streaming import start_ticker
 
 log = get_logger(__name__)
 
-RECOMPUTE_INTERVAL_SECONDS = 30
+RECOMPUTE_INTERVAL_SECONDS = 10
 # Sessions the engine evaluates over. Indicators are computed on just this
 # window, and the 60-minute MACD signal needs about six sessions to converge,
 # so a smaller window quietly yields under-converged scores.
@@ -138,6 +138,12 @@ class LiveService:
         settings = yaml.safe_load(app_paths.settings_path().read_text(encoding="utf-8"))
         self.rules = load_rules(settings)
         self._notifications = NotificationEngine()
+        # The dashboard's own recompute field can already be edited live once
+        # this is running, but a fresh start (or the headless `main.py live`)
+        # has no running dashboard to have set it, so pick up the persisted
+        # value here too.
+        self.recompute_seconds = (settings.get("dashboard") or {}).get(
+            "recompute_seconds", self.recompute_seconds)
 
         self.disabled = disabled_condition_ids(config)
         if self.disabled:

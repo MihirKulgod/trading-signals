@@ -216,7 +216,7 @@ def humanise(seconds: float) -> str:
 
 def countdown_state(service) -> tuple[float, float]:
     """(fraction of the interval elapsed, seconds overdue)."""
-    interval = max(1, getattr(service, "recompute_seconds", 30))
+    interval = max(1, getattr(service, "recompute_seconds", 10))
     last_run = getattr(service, "last_run", None)
     if last_run is None:
         return 0.0, 0.0
@@ -309,6 +309,7 @@ def dashboard_config(settings_doc) -> Any:
         node = CommentedMap()
     settings_doc["dashboard"] = node
     node.setdefault("size", 1.0)
+    node.setdefault("recompute_seconds", 10)
     node.setdefault("panels", CommentedSeq())
     node.setdefault("compact_children", CommentedSeq())
     _migrate_visible_when(node["panels"])
@@ -403,6 +404,11 @@ def dashboard_section(settings_doc, strategy_doc, service, save) -> None:
             .props("dense").style("width:130px") \
             .tooltip("Smaller panels fit more per row")
         slider.on("change", lambda _: _set_size(config, slider.value, save))
+        ui.label("recompute (s)").classes(MUTED)
+        ui.number(value=config.get("recompute_seconds", 10), min=1, precision=0, format="%d",
+                  on_change=lambda e, s=service: _set_recompute_seconds(config, e.value, save, s)) \
+            .props("dense").style("width:60px") \
+            .tooltip("How often the live engine recalculates every signal, in seconds")
         ui.switch("show hidden", value=LIVE["show_hidden"],
                   on_change=lambda e, s=service: _toggle_show_hidden(e.value, s)) \
             .props("dense").tooltip(
@@ -783,6 +789,15 @@ def _set_size(config, value, save) -> None:
     config["size"] = round(size, 2)
     resize(size)
     save()
+
+
+def _set_recompute_seconds(config, value, save, service) -> None:
+    """Applied to the running service immediately (it reads recompute_seconds
+    fresh every tick) and persisted so the next start() picks it up too."""
+    seconds = max(1, int(value)) if value not in (None, "") else 10
+    config["recompute_seconds"] = seconds
+    save()
+    service.recompute_seconds = seconds
 
 
 def _set(panel, key, value, save) -> None:

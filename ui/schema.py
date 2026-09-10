@@ -626,6 +626,7 @@ class Dashboard(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     size: float = Field(default=1.0, ge=0.6, le=1.4)
+    recompute_seconds: int = Field(default=10, ge=1)
     panels: list[DashboardPanel] = []
     # Child ids currently showing name + met/total only (colour from that
     # fraction) instead of the usual score -- toggled by clicking the child,
