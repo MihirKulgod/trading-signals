@@ -1288,17 +1288,12 @@ async def _import_document(doc_key: str, event) -> None:
     ui.notify(f"Imported {PATHS[doc_key].name}")
 
 
-# QUploader has no prop for this -- its header always shows a byte/percent
-# subtitle even at rest, which dwarfs a plain "Export" button beside it.
+# QUploader's own header (title + pick-button) only makes the small pick-icon
+# clickable and doesn't match a plain ui.button's height -- so its header is
+# hidden entirely and a real button drives it instead (see _show_import_export).
 _IMPORT_EXPORT_CSS = """
-.import-upload.q-uploader { min-height: 0 !important; }
-.import-upload .q-uploader__header { min-height: 0 !important; padding: 4px 12px !important; }
-.import-upload .q-uploader__subtitle { display: none !important; }
-.import-upload .q-uploader__header-content .q-btn {
-  min-height: 24px !important; min-width: 24px !important; padding: 0 !important;
-}
-.import-upload .q-uploader__header-content .q-btn .q-icon { font-size: 18px !important; }
-.import-upload .q-uploader__title { font-size: 0.8rem !important; line-height: 1.5 !important; }
+.import-export-row .q-uploader { display: none; }
+.import-export-row .q-btn { height: 32px; }
 """
 
 
@@ -1308,15 +1303,18 @@ def _show_import_export() -> None:
         ui.label("Export gives you the file as currently saved on disk. "
                   "Import replaces it immediately if the upload is valid.").classes(MUTED)
         for doc_key, label in (("strategy", "Strategy"), ("settings", "Settings")):
-            with ui.row().classes("items-center gap-3 w-full no-wrap"):
+            with ui.row().classes("items-center gap-3 w-full no-wrap import-export-row"):
                 ui.label(label).classes("w-20 shrink-0")
                 ui.button("Export", icon="download",
                           on_click=lambda k=doc_key: _export_document(k)) \
                     .props("outline dense no-caps").classes("shrink-0")
-                ui.upload(on_upload=lambda e, k=doc_key: _import_document(k, e),
-                         auto_upload=True, label="Import") \
-                    .props("flat borderless dense no-caps hide-upload-btn accept=.yaml,.yml") \
-                    .classes("shrink-0 import-upload").style("width:160px")
+                upload = ui.upload(on_upload=lambda e, k=doc_key: _import_document(k, e),
+                                   auto_upload=True) \
+                    .props("accept=.yaml,.yml")
+                ui.button("Import", icon="add",
+                          on_click=lambda u=upload: ui.run_javascript(
+                              f'getHtmlElement({u.id}).querySelector("input[type=file]").click()')) \
+                    .props("dense no-caps").classes("shrink-0").style("width:160px")
         with ui.row().classes("justify-end w-full"):
             ui.button("Close", on_click=dialog.close).props("flat")
     dialog.open()
