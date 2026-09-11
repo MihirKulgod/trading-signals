@@ -657,6 +657,7 @@ class Notifications(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     rules: list[NotificationRule] = []
+    volume: int = Field(default=100, ge=0, le=100)
 
 
 class Settings(BaseModel):

@@ -17,6 +17,8 @@ import yaml
 from nicegui import ui
 
 import app_paths
+import notifications
+import sound
 from app_logging import get_logger
 from data_processing import format_signal_stat, signal_stats
 from jobs import RUNNER
@@ -872,6 +874,20 @@ def _set_rule_min_met(rule, value, save) -> None:
     rule.setdefault("params", CommentedMap())["min_met"] = max(1, n)
     save()
 
+def _set_volume(settings_doc, value, save) -> None:
+    """Called on slider release: persists the choice, applies it to the
+    running live service immediately, and previews it -- same "drag only
+    restyles, release commits" pattern as the dashboard's size slider."""
+    from ruamel.yaml.comments import CommentedMap
+    from live_service import SERVICE
+
+    node = settings_doc.setdefault("notifications", CommentedMap())
+    volume = max(0, min(100, int(value)))
+    node["volume"] = volume
+    save()
+    SERVICE.volume = volume
+    sound.play(notifications.NOTIFICATION_SOUND_PATH, volume)
+
 @ui.refreshable
 def _notifications_section(settings_doc, strategy_doc, save) -> None:
     from ui import dashboard
@@ -883,6 +899,15 @@ def _notifications_section(settings_doc, strategy_doc, save) -> None:
         ui.label("Notifications").classes("font-medium")
         ui.button(icon="add", on_click=lambda: _add_rule(rules, save)) \
             .props("flat dense").tooltip("Add a notification rule")
+    with ui.row().classes("items-center gap-2"):
+        ui.label("Volume").classes(MUTED)
+        volume = int((settings_doc.get("notifications") or {}).get("volume", 100))
+        volume_label = ui.label(f"{volume}%").classes(MUTED).style("width:36px")
+        volume_slider = ui.slider(min=0, max=100, step=1, value=volume,
+                                  on_change=lambda e: volume_label.set_text(f"{int(e.value)}%")) \
+            .props("dense").style("width:160px") \
+            .tooltip("Notification sound volume -- release to save and preview")
+        volume_slider.on("change", lambda _: _set_volume(settings_doc, volume_slider.value, save))
     ui.label("Delivery isn't wired up yet -- rules just log until a channel is chosen. "
              "The notification sound (if enabled below) plays regardless.") \
         .classes(MUTED)

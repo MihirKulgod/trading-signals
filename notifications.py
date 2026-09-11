@@ -111,7 +111,7 @@ class NotificationEngine:
         self._last_met: dict[str, bool] = {}
 
     def evaluate(self, rules: list[NotificationRule], scores: dict,
-                children: dict) -> list[NotificationEvent]:
+                children: dict, volume: int = 100) -> list[NotificationEvent]:
         events = []
         for rule in rules:
             if not rule.enabled:
@@ -132,5 +132,5 @@ class NotificationEngine:
         # One sound per cycle, however many sound-enabled rules fired -- never
         # several overlapping starts of the same clip.
         if any(event.rule.notification_sound for event in events):
-            sound.play(NOTIFICATION_SOUND_PATH)
+            sound.play(NOTIFICATION_SOUND_PATH, volume)
         return events
