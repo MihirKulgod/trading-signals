@@ -204,11 +204,32 @@ def generate_base(config, instruments_data, progress=None):
                      lambda instrument: bracket_by_day(instrument["candles"]),
                      progress=progress)
 
-def generate_base_window(config, instruments_data, window_days: int):
-    """Rebuilds the live frames; the developing candle is only needed for now."""
+def generate_base_window(config, instruments_data, window_days: int, live_candles: dict | None = None):
+    """
+    Rebuilds the live frames; the developing candle is only needed for now.
+
+    ``live_candles``, when given, is the still-forming 1-minute candle per
+    instrument id (see LiveCandleBuilder.current_candles) -- appended on top
+    of the closed 1-minute history so the developing (live) frame reflects
+    the current minute's ticks instead of lagging behind by up to a minute.
+    Closed-candle references are unaffected: the newest bucket they build
+    from was already treated as possibly-still-forming and skipped.
+    """
     def windowed(instrument):
         days = bracket_by_day(instrument["candles"])
-        return dict(sorted(days.items())[-window_days:])
+        windowed_days = dict(sorted(days.items())[-window_days:])
+
+        live = (live_candles or {}).get(instrument["id"])
+        if live is not None and windowed_days:
+            last_day = max(windowed_days)
+            new_row = pd.DataFrame(
+                [[live["open"], live["high"], live["low"], live["close"], live["volume"]]],
+                columns=OHLCV_COLUMNS,
+                index=pd.DatetimeIndex([live["minute"]], name="datetime"),
+            )
+            windowed_days = dict(windowed_days)
+            windowed_days[last_day] = pd.concat([windowed_days[last_day], new_row]).sort_index()
+        return windowed_days
 
     build_timeframes(config, instruments_data, windowed, developing_history=False)
 

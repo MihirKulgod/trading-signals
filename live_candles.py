@@ -69,6 +69,26 @@ class LiveCandleBuilder:
             candle.close = ltp
             candle.volume += volume_delta
 
+    def current_candles(self) -> dict[str, dict]:
+        """
+        The still-forming 1-minute candle for each instrument, keyed by
+        instrument id -- these never appear in instrument["candles"] until
+        the *next* minute's first tick finalizes them, so anything reading
+        only that history lags real ticks by up to a minute. Fed into the
+        developing (live) higher-timeframe frame so it reflects the current
+        minute's price instead.
+        """
+        result = {}
+        for token, candle in self.developing.items():
+            instrument_id = self.token_to_id.get(token)
+            if instrument_id is None:
+                continue
+            result[instrument_id] = {
+                "minute": candle.minute, "open": candle.open, "high": candle.high,
+                "low": candle.low, "close": candle.close, "volume": candle.volume,
+            }
+        return result
+
     def _finalize_candle(self, instrument_id: str, candle: DevelopingCandle) -> None:
         write_candle({
             "date": candle.minute.to_pydatetime(),

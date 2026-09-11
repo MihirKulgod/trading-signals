@@ -21,9 +21,9 @@ class LiveEvaluator:
         # the end of a cycle so a reader never sees it half filled.
         self.node_scores: dict[str, float] = {}
 
-    def run_once(self, now: pd.Timestamp) -> dict[str, float]:
+    def run_once(self, now: pd.Timestamp, live_candles: dict | None = None) -> dict[str, float]:
         print("> Running evaluator..")
-        generate_base_window(self.config, self.instruments_data, self.window_days)
+        generate_base_window(self.config, self.instruments_data, self.window_days, live_candles)
 
         ctx = MarketContext(self.instruments_data, now)
         scores = {}

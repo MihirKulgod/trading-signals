@@ -107,7 +107,7 @@ class LiveService:
                 builder.drain()
                 if time.monotonic() - last_recompute >= self.recompute_seconds:
                     now = pd.Timestamp.now(tz="Asia/Kolkata").tz_localize(None)
-                    self.scores = evaluator.run_once(now)
+                    self.scores = evaluator.run_once(now, builder.current_candles())
                     self.node_scores = evaluator.node_scores
                     self.last_run = now
                     last_recompute = time.monotonic()
