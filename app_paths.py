@@ -29,6 +29,17 @@ _REPO_ROOT = Path(__file__).resolve().parent
 def is_frozen() -> bool:
     return getattr(sys, "frozen", False)
 
+def asset_path(name: str) -> Path:
+    """
+    A bundled, read-only resource shipped with the app itself (e.g. the
+    notification sound) -- distinct from base_dir()'s per-user data, which is
+    writable and doesn't exist until the app creates it. PyInstaller's
+    --onedir build extracts --add-data "assets;assets" into sys._MEIPASS.
+    """
+    if is_frozen():
+        return Path(getattr(sys, "_MEIPASS", _REPO_ROOT)) / "assets" / name
+    return _REPO_ROOT / "assets" / name
+
 def base_dir() -> Path:
     override = os.environ.get(HOME_ENV_VAR)
     if override:

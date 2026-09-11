@@ -650,6 +650,7 @@ class NotificationRule(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     edge: Literal["rising", "falling", "level"] = "rising"
     enabled: bool = True
+    notification_sound: bool = False
 
 
 class Notifications(BaseModel):

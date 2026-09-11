@@ -845,6 +845,7 @@ def _add_rule(rules, save) -> None:
     rule["params"] = CommentedMap()
     rule["edge"] = "rising"
     rule["enabled"] = True
+    rule["notification_sound"] = False
     rules.append(rule)
     save()
     _notifications_section.refresh()
@@ -882,7 +883,8 @@ def _notifications_section(settings_doc, strategy_doc, save) -> None:
         ui.label("Notifications").classes("font-medium")
         ui.button(icon="add", on_click=lambda: _add_rule(rules, save)) \
             .props("flat dense").tooltip("Add a notification rule")
-    ui.label("Delivery isn't wired up yet -- rules just log until a channel is chosen.") \
+    ui.label("Delivery isn't wired up yet -- rules just log until a channel is chosen. "
+             "The notification sound (if enabled below) plays regardless.") \
         .classes(MUTED)
     if len(rules) == 0:
         ui.label("No rules yet.").classes(MUTED)
@@ -911,6 +913,9 @@ def _notifications_section(settings_doc, strategy_doc, save) -> None:
             ui.switch(value=rule.get("enabled", True),
                      on_change=lambda e, r=rule: _set_rule_field(r, "enabled", e.value, save)) \
                 .props("dense").tooltip("Enabled")
+            ui.switch("Notification Sound", value=rule.get("notification_sound", False),
+                     on_change=lambda e, r=rule: _set_rule_field(r, "notification_sound", e.value, save)) \
+                .props("dense").tooltip("Play the notification sound when this rule fires")
             ui.button(icon="delete",
                       on_click=lambda i=index: _confirm_delete_rule(rules, i, save)) \
                 .props("flat dense color=negative")

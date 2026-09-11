@@ -15,9 +15,13 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+import app_paths
+import sound
 from app_logging import get_logger
 
 log = get_logger(__name__)
+
+NOTIFICATION_SOUND_PATH = app_paths.asset_path("notification.wav")
 
 
 def _is_met(value: Any) -> bool:
@@ -63,6 +67,7 @@ class NotificationRule:
     params: dict = field(default_factory=dict)
     edge: str = "rising"          # "rising" | "falling" | "level"
     enabled: bool = True
+    notification_sound: bool = False
 
 
 @dataclass
@@ -88,6 +93,7 @@ def load_rules(settings_doc: dict) -> list[NotificationRule]:
             params=dict(r.get("params") or {}),
             edge=str(r.get("edge", "rising")),
             enabled=bool(r.get("enabled", True)),
+            notification_sound=bool(r.get("notification_sound", False)),
         )
         for r in raw
     ]
@@ -123,4 +129,8 @@ class NotificationEngine:
                 events.append(NotificationEvent(rule, met, scores.get(rule.target)))
         for event in events:
             self.send(event)
+        # One sound per cycle, however many sound-enabled rules fired -- never
+        # several overlapping starts of the same clip.
+        if any(event.rule.notification_sound for event in events):
+            sound.play(NOTIFICATION_SOUND_PATH)
         return events

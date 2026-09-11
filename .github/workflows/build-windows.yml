@@ -30,6 +30,7 @@ jobs:
           $nicegui = python -c "import nicegui, os; print(os.path.dirname(nicegui.__file__))"
           pyinstaller --name "Trading Signals" --onedir `
             --add-data "${nicegui};nicegui" `
+            --add-data "assets;assets" `
             --copy-metadata pandas-ta-openbb `
             --copy-metadata keyring `
             main.py
