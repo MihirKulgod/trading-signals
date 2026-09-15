@@ -658,6 +658,7 @@ class Notifications(BaseModel):
 
     rules: list[NotificationRule] = []
     volume: int = Field(default=100, ge=0, le=100)
+    pitch: int = Field(default=100, ge=85, le=160)
 
 
 class Settings(BaseModel):

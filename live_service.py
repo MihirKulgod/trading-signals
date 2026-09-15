@@ -35,6 +35,7 @@ log = get_logger(__name__)
 
 RECOMPUTE_INTERVAL_SECONDS = 10
 DEFAULT_VOLUME = 100
+DEFAULT_PITCH = 100
 # Sessions the engine evaluates over. Indicators are computed on just this
 # window, and the 60-minute MACD signal needs about six sessions to converge,
 # so a smaller window quietly yields under-converged scores.
@@ -51,6 +52,7 @@ class LiveService:
         self.recompute_seconds = recompute_seconds
         self.window_days = window_days
         self.volume = DEFAULT_VOLUME
+        self.pitch = DEFAULT_PITCH
         self.state = "stopped"          # stopped | starting | running | error
         self.error: str | None = None
         self.last_run: pd.Timestamp | None = None
@@ -113,7 +115,8 @@ class LiveService:
                     self.node_scores = evaluator.node_scores
                     self.last_run = now
                     last_recompute = time.monotonic()
-                    self._notifications.evaluate(self.rules, self.node_scores, evaluator.children, self.volume)
+                    self._notifications.evaluate(self.rules, self.node_scores, evaluator.children,
+                                                 self.volume, self.pitch)
             except Exception as error:
                 # One bad cycle must not kill the engine during market hours.
                 self.error = f"{type(error).__name__}: {error}"
@@ -147,6 +150,7 @@ class LiveService:
         self.recompute_seconds = (settings.get("dashboard") or {}).get(
             "recompute_seconds", self.recompute_seconds)
         self.volume = (settings.get("notifications") or {}).get("volume", self.volume)
+        self.pitch = (settings.get("notifications") or {}).get("pitch", self.pitch)
 
         self.disabled = disabled_condition_ids(config)
         if self.disabled:

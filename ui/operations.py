@@ -886,7 +886,19 @@ def _set_volume(settings_doc, value, save) -> None:
     node["volume"] = volume
     save()
     SERVICE.volume = volume
-    sound.play(notifications.NOTIFICATION_SOUND_PATH, volume)
+    sound.play(notifications.NOTIFICATION_SOUND_PATH, volume, SERVICE.pitch)
+
+def _set_pitch(settings_doc, value, save) -> None:
+    """Same release-commits-and-previews pattern as _set_volume."""
+    from ruamel.yaml.comments import CommentedMap
+    from live_service import SERVICE
+
+    node = settings_doc.setdefault("notifications", CommentedMap())
+    pitch = max(85, min(160, int(value)))
+    node["pitch"] = pitch
+    save()
+    SERVICE.pitch = pitch
+    sound.play(notifications.NOTIFICATION_SOUND_PATH, SERVICE.volume, pitch)
 
 @ui.refreshable
 def _notifications_section(settings_doc, strategy_doc, save) -> None:
@@ -908,6 +920,15 @@ def _notifications_section(settings_doc, strategy_doc, save) -> None:
             .props("dense").style("width:160px") \
             .tooltip("Notification sound volume -- release to save and preview")
         volume_slider.on("change", lambda _: _set_volume(settings_doc, volume_slider.value, save))
+    with ui.row().classes("items-center gap-2"):
+        ui.label("Pitch").classes(MUTED)
+        pitch = int((settings_doc.get("notifications") or {}).get("pitch", 100))
+        pitch_label = ui.label(f"{pitch}%").classes(MUTED).style("width:36px")
+        pitch_slider = ui.slider(min=85, max=160, step=1, value=pitch,
+                                 on_change=lambda e: pitch_label.set_text(f"{int(e.value)}%")) \
+            .props("dense").style("width:160px") \
+            .tooltip("Notification sound pitch -- release to save and preview")
+        pitch_slider.on("change", lambda _: _set_pitch(settings_doc, pitch_slider.value, save))
     ui.label("Delivery isn't wired up yet -- rules just log until a channel is chosen. "
              "The notification sound (if enabled below) plays regardless.") \
         .classes(MUTED)
