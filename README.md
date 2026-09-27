@@ -1,6 +1,6 @@
 # Trading Signals
 
-A condition-driven engine for building and running intraday trading strategies against live market data. Raw candles across multiple timeframes and instruments feed a tree of composable conditions (comparisons, AND/OR/NOT logic, rolling-window checks, boosts) that score continuously rather than just firing true/false, so nested rules combine cleanly into higher-level signals. The same strategy definition runs unchanged in three modes: historical backtesting, a live engine against streaming data, and an interactive editor/dashboard.
+A condition-driven engine for building and running intraday trading strategies against live market data, built on Zerodha's Kite Connect API. Raw candles across multiple timeframes and instruments feed a tree of composable conditions (comparisons, AND/OR/NOT logic, rolling-window checks, boosts) that score continuously rather than just firing true/false, so nested rules combine cleanly into higher-level signals. The same strategy definition runs unchanged in three modes: historical backtesting, a live engine against streaming data, and an interactive editor/dashboard.
 
 This is a **signal engine, not an auto-trader** — it surfaces when a strategy's conditions are met; a human still decides whether to place the trade.
 
